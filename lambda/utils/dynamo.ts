@@ -78,11 +78,14 @@ export interface IDynamoUtil {
 export class DynamoUtil implements IDynamoUtil {
   private _dynamo?: DynamoDBDocumentClient;
 
-  constructor(private readonly log: ILogUtil) {}
+  constructor(
+    private readonly log: ILogUtil,
+    private readonly clientConfig: DynamoDBClientConfig = {}
+  ) {}
 
   private get dynamo(): DynamoDBDocumentClient {
     if (this._dynamo == null) {
-      this._dynamo = DynamoDBDocumentClient.from(new DynamoDBClient(DynamoUtil_clientConfig()), {
+      this._dynamo = DynamoDBDocumentClient.from(new DynamoDBClient(this.clientConfig), {
         marshallOptions: { removeUndefinedValues: true },
       });
     }
@@ -576,14 +579,6 @@ export class DynamoUtil implements IDynamoUtil {
       BATCH_WRITE_CONCURRENCY
     );
   }
-}
-
-function DynamoUtil_clientConfig(): DynamoDBClientConfig {
-  const endpoint = process.env.DYNAMODB_ENDPOINT;
-  if (!endpoint) {
-    return {};
-  }
-  return { endpoint, region: process.env.AWS_REGION || "us-west-2" };
 }
 
 const BATCH_MAX_ATTEMPTS = 8;

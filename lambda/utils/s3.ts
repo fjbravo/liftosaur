@@ -38,25 +38,25 @@ export class S3Util implements IS3Util {
   private _s3?: S3Client;
   private _presignerS3?: S3Client;
 
-  constructor(public readonly log: ILogUtil) {}
+  constructor(
+    public readonly log: ILogUtil,
+    private readonly clientConfig: S3ClientConfig = {},
+    private readonly presignerClientConfig?: S3ClientConfig
+  ) {}
 
   private get s3(): S3Client {
     if (this._s3 == null) {
-      this._s3 = new S3Client(S3Util_clientConfig(process.env.S3_ENDPOINT));
+      this._s3 = new S3Client(this.clientConfig);
     }
     return this._s3;
   }
 
-  // Presigned URLs are handed to browsers, which can't resolve a container-internal S3 host, so
-  // they're signed against the externally reachable endpoint while server-side calls keep using
-  // the internal one. The signature covers the host, so this has to be a separate client.
   private get presignerS3(): S3Client {
-    const publicEndpoint = process.env.S3_PUBLIC_ENDPOINT;
-    if (!publicEndpoint) {
+    if (this.presignerClientConfig == null) {
       return this.s3;
     }
     if (this._presignerS3 == null) {
-      this._presignerS3 = new S3Client(S3Util_clientConfig(publicEndpoint));
+      this._presignerS3 = new S3Client(this.presignerClientConfig);
     }
     return this._presignerS3;
   }
@@ -161,12 +161,4 @@ export class S3Util implements IS3Util {
     this.log.log("S3 presigned download URL generated:", `${args.bucket}/${args.key}`, `- ${Date.now() - startTime}ms`);
     return downloadUrl;
   }
-}
-
-// forcePathStyle is required for S3-compatible servers (e.g. MinIO) that don't do vhost-style buckets.
-function S3Util_clientConfig(endpoint?: string): S3ClientConfig {
-  if (!endpoint) {
-    return {};
-  }
-  return { endpoint, forcePathStyle: true, region: process.env.AWS_REGION || "us-west-2" };
 }

@@ -56,10 +56,10 @@ One-time setup:
 
 1. **Set the build-time URL.** The public URL is baked into the images, so create a
    repository *variable* named `LIFTOSAUR_HOST` (GitHub → Settings → Secrets and
-   variables → Actions → Variables) with the same value as `HOST` in your `.env`
-   (e.g. `https://lift.example.com`). Without it, images are built for
-   `http://localhost`. Changing the variable requires a re-run of the workflow
-   (it has a manual `workflow_dispatch` trigger).
+   variables → Actions → Variables) with the same value as `HOST` in your `.env`.
+   Without it, images are built for the default `https://liftosaur.bylab.io`.
+   Changing the variable requires a re-run of the workflow (it has a manual
+   `workflow_dispatch` trigger).
 2. **Make the images pullable.** Either make both GHCR packages public (GitHub →
    Packages → package → Package settings → Change visibility), or on the deployment
    host run `docker login ghcr.io` with a token that has `read:packages`.
@@ -78,9 +78,30 @@ docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
 `.github/workflows/upstream-sync.yml` runs weekly (Mondays 06:00 UTC, or manually via
 `workflow_dispatch`) and, when upstream `astashov/liftosaur` has new commits, pushes them
 to the `upstream-sync` branch and opens a PR into `master`. Merging that PR is the sync:
-it keeps the self-hosting changes on top, surfaces any conflicts in the PR itself, and —
-because it is a push to `master` — automatically publishes fresh images to GHCR. The
-schedule only fires once the workflow file is on the default branch.
+it keeps the self-hosting changes on top, and — because it is a push to `master` —
+automatically publishes fresh images to GHCR.
+
+Before opening the PR, the workflow also test-merges upstream into master locally (never
+pushed) and, if that merge is clean, builds both Docker images from the merged tree
+(without pushing them) as a smoke test. The PR body reports the result:
+
+- **Conflicts** — listed in the PR body (and, if the PR was already open, as a comment
+  too), so you resolve them the same way you'd resolve any merge conflict, right there
+  when you merge the PR.
+- **Clean merge, both images build** — the PR body says validation passed.
+- **Clean merge, an image fails to build** — the PR body says which image failed and
+  links the workflow run's logs, without blocking the PR from being opened.
+
+This is needed because PRs and branches pushed with the default `GITHUB_TOKEN` don't
+trigger other workflows (GitHub's recursion guard), so the sync PR itself gets no CI from
+the image-build workflow below — without this validation step, a break in the Docker
+builds would only surface after merging. The validation adds roughly 15 minutes to the
+weekly run. The schedule only fires once the workflow file is on the default branch.
+
+Separately, `.github/workflows/selfhosted-images.yml` also runs (build-only, no registry
+push) on any pull request into `master` — including this sync PR if it's ever reopened
+manually, and any other PR that touches the images — giving PRs a build check via normal
+GitHub Actions status checks.
 
 ## What you get
 
