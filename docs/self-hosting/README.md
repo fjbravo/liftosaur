@@ -41,6 +41,38 @@ To use a port other than 80, set **both** `HTTP_PORT` and `HOST` — the public 
 compiled into the images, so `HTTP_PORT=8080` needs `HOST=http://localhost:8080` and a
 rebuild (`docker compose up -d --build`).
 
+## Pulling prebuilt images (GitHub Actions)
+
+Every push to the default branch runs `.github/workflows/selfhosted-images.yml`, which
+builds both images and publishes them to GitHub Container Registry as
+`ghcr.io/<owner>/liftosaur-server` and `ghcr.io/<owner>/liftosaur-web` (tagged `latest`,
+plus the branch name and commit SHA). A deployment can then pull instead of building:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
+```
+
+One-time setup:
+
+1. **Set the build-time URL.** The public URL is baked into the images, so create a
+   repository *variable* named `LIFTOSAUR_HOST` (GitHub → Settings → Secrets and
+   variables → Actions → Variables) with the same value as `HOST` in your `.env`
+   (e.g. `https://lift.example.com`). Without it, images are built for
+   `http://localhost`. Changing the variable requires a re-run of the workflow
+   (it has a manual `workflow_dispatch` trigger).
+2. **Make the images pullable.** Either make both GHCR packages public (GitHub →
+   Packages → package → Package settings → Change visibility), or on the deployment
+   host run `docker login ghcr.io` with a token that has `read:packages`.
+
+To pin a specific build instead of `latest`, set `LIFTOSAUR_IMAGE_TAG` in `.env` to a
+branch or `sha-…` tag from the workflow run. Updating the deployment is then:
+
+```bash
+git pull                        # for compose/env changes
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
+```
+
 ## What you get
 
 | Works out of the box | Notes |

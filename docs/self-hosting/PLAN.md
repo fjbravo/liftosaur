@@ -227,6 +227,16 @@ All inert unless the env var is set; AWS path unchanged otherwise.
       the hardcoded `.liftosaur.com` session-cookie domain, and absolute
       nginx redirects dropping the public port.
 
+### WP7 — CI image publishing
+
+- [x] `.github/workflows/selfhosted-images.yml` — on every push to the default
+      branch (and manually via `workflow_dispatch`), builds both images and
+      publishes them to GHCR as `<owner>/liftosaur-server` / `-web`, tagged
+      `latest` + branch + SHA. The public URL comes from the `LIFTOSAUR_HOST`
+      repository variable (default `http://localhost`).
+- [x] `docker-compose.ghcr.yml` — overlay switching the stack from local builds
+      to pulled images (`LIFTOSAUR_IMAGE_REPO`/`LIFTOSAUR_IMAGE_TAG`).
+
 ## Environment variable contract
 
 | Variable | Required | Purpose |
