@@ -1,14 +1,27 @@
 # Keeps this fork up to date with the upstream project (astashov/liftosaur).
 #
-# Weekly (and on demand), fetches upstream master and, when it has new commits,
-# force-pushes it to the `upstream-sync` branch and opens a PR into master.
-# Merging that PR is the sync: a clean merge is one click, and conflicts with
-# the self-hosting changes surface in the PR instead of landing on master
-# unresolved. Merging also triggers the self-hosted image pipeline, so fresh
-# images are published automatically.
+# Weekly (and on demand), fetches upstream master and, when it has new commits:
+#   1. Test-merges upstream/master into master locally (never pushed) to see whether
+#      it merges cleanly.
+#   2. On a clean merge, builds both self-hosted Docker images from the merged tree
+#      (without pushing them) as a smoke test that upstream hasn't broken the build.
+#   3. Force-pushes the raw, unmerged upstream/master to the `upstream-sync` branch
+#      and opens (or updates) a PR into master, with the merge/build result reported
+#      in the PR body.
 #
-# Note: scheduled workflows only run from the default branch, so this activates
-# once it lands on master.
+# This exists because PRs/branches pushed with the default GITHUB_TOKEN do not
+# trigger other workflows (GitHub's recursion guard) - the sync PR gets no CI from
+# the self-hosted-images workflow, so without this validation an upstream change
+# that breaks the Docker builds would only be discovered after merging.
+#
+# Merging the PR is still the actual sync: a clean merge is one click, and conflicts
+# with the self-hosting changes surface in the PR instead of landing on master
+# unresolved. Merging also triggers the self-hosted image pipeline (a real push to
+# master), so fresh images are published automatically.
+#
+# Note: the merge/build validation adds roughly 15 minutes to the weekly run (two
+# sequential Docker builds). Scheduled workflows only run from the default branch,
+# so this activates once it lands on master.
 
 name: Upstream sync
 
@@ -41,19 +54,111 @@ jobs:
           echo "count=$count" >> "$GITHUB_OUTPUT"
           echo "Upstream is $count commit(s) ahead of this fork's master."
 
-      - name: Push sync branch and open PR
+      - name: Test-merge upstream into master
+        id: merge
+        if: steps.check.outputs.count != '0'
+        run: |
+          git config user.name "upstream-sync"
+          git config user.email "actions@github.com"
+
+          # A committed local merge (as opposed to --no-commit) is simpler to build
+          # from below. This branch and its merge commit are local-only - never pushed.
+          git checkout -b upstream-sync-test origin/master
+          if git merge --no-ff -m "Test merge upstream/master (validation only, not pushed)" upstream/master; then
+            echo "Merge is clean."
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Merge has conflicts."
+            files=$(git diff --name-only --diff-filter=U)
+            git merge --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "conflict_files<<EOF_CONFLICT_FILES"
+              echo "$files"
+              echo "EOF_CONFLICT_FILES"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build server image (validation)
+        id: build-server
+        if: steps.check.outputs.count != '0' && steps.merge.outputs.conflict == 'false'
+        continue-on-error: true
+        run: |
+          docker build -f selfhosted/docker/Dockerfile.server \
+            --build-arg LIFTOSAUR_HOST=https://liftosaur.bylab.io \
+            --build-arg LIFTOSAUR_API_HOST=https://liftosaur.bylab.io \
+            --build-arg LIFTOSAUR_STREAMING_API_HOST=https://liftosaur.bylab.io \
+            --build-arg LIFTOSAUR_SELF_HOSTED=true \
+            .
+
+      - name: Build web image (validation)
+        id: build-web
+        if: steps.check.outputs.count != '0' && steps.merge.outputs.conflict == 'false'
+        continue-on-error: true
+        run: |
+          docker build -f selfhosted/docker/Dockerfile.web \
+            --build-arg LIFTOSAUR_HOST=https://liftosaur.bylab.io \
+            --build-arg LIFTOSAUR_API_HOST=https://liftosaur.bylab.io \
+            --build-arg LIFTOSAUR_STREAMING_API_HOST=https://liftosaur.bylab.io \
+            --build-arg LIFTOSAUR_SELF_HOSTED=true \
+            .
+
+      - name: Build PR body
+        id: body
+        if: steps.check.outputs.count != '0'
+        run: |
+          COUNT="${{ steps.check.outputs.count }}"
+          CONFLICT="${{ steps.merge.outputs.conflict }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          {
+            echo "Automated PR from the upstream-sync workflow: upstream master has $COUNT new commit(s)."
+            echo ""
+            if [ "$CONFLICT" = "true" ]; then
+              echo "## :warning: Merge conflicts - resolve before merging"
+              echo ""
+              echo "A local test merge of upstream/master into master produced conflicts. Resolving them happens when you merge this PR - the \`upstream-sync\` branch itself is still the raw, unmerged upstream/master, so no Docker build validation ran this time."
+              echo ""
+              echo "Conflicted files:"
+              echo ""
+              printf '%s\n' "${{ steps.merge.outputs.conflict_files }}" | while IFS= read -r f; do
+                [ -n "$f" ] && echo "- \`$f\`"
+              done
+            else
+              echo "## Validation"
+              echo ""
+              if [ "${{ steps.build-server.outcome }}" = "success" ] && [ "${{ steps.build-web.outcome }}" = "success" ]; then
+                echo ":white_check_mark: Merge is clean. Both Docker images built successfully from the merged tree (server, web)."
+              else
+                echo ":x: Merge is clean, but the validation build failed:"
+                echo ""
+                if [ "${{ steps.build-server.outcome }}" = "success" ]; then echo "- server: built"; else echo "- server: **build failed**"; fi
+                if [ "${{ steps.build-web.outcome }}" = "success" ]; then echo "- web: built"; else echo "- web: **build failed**"; fi
+                echo ""
+                echo "See the workflow run for logs: $RUN_URL"
+              fi
+            fi
+            echo ""
+            echo "Merging this PR merges upstream into this fork's master, keeping the self-hosting changes on top, and triggers the self-hosted image pipeline. If GitHub reports conflicts, resolve them here (typically where upstream touched the same files as the self-hosting adapters) before merging."
+          } > pr-body.md
+
+      - name: Push sync branch and open/update PR
         if: steps.check.outputs.count != '0'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           git push --force origin upstream/master:refs/heads/upstream-sync
-          open_pr=$(gh pr list --head upstream-sync --base master --state open --json number --jq 'length')
-          if [ "$open_pr" = "0" ]; then
+
+          pr_number=$(gh pr list --head upstream-sync --base master --state open --json number --jq '.[0].number // empty')
+
+          if [ -z "$pr_number" ]; then
             gh pr create --head upstream-sync --base master \
               --title "Sync fork with upstream astashov/liftosaur" \
-              --body "Automated PR from the upstream-sync workflow: upstream master has ${{ steps.check.outputs.count }} new commit(s).
-
-          Merging this PR merges upstream into this fork's master, keeping the self-hosting changes on top, and triggers the self-hosted image pipeline. If GitHub reports conflicts, resolve them here (typically where upstream touched the same files as the self-hosting adapters) before merging."
+              --body-file pr-body.md
           else
-            echo "Sync PR already open - branch updated in place."
+            echo "Sync PR #$pr_number already open - branch and description updated in place."
+            gh pr edit "$pr_number" --body-file pr-body.md
+            if [ "${{ steps.merge.outputs.conflict }}" = "true" ]; then
+              gh pr comment "$pr_number" --body ":warning: Upstream sync re-ran and the merge still has conflicts. See the updated PR description for the conflicted files."
+            fi
           fi
