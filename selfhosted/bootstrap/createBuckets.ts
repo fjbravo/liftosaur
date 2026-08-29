@@ -116,9 +116,9 @@ async function applyResizerWebhookNotification(client: S3Client, bucket: string)
     console.log(
       `Image resizing webhook is not enabled (MINIO_NOTIFY_WEBHOOK_ENABLE_RESIZER != "true").\n` +
         `To enable automatic resizing of uploaded user images:\n` +
-        `  1. Set these env vars on the minio container and restart it:\n` +
-        `       MINIO_NOTIFY_WEBHOOK_ENABLE_RESIZER=true\n` +
-        `       MINIO_NOTIFY_WEBHOOK_ENDPOINT_RESIZER=http://server:3000/api/minio-resize-webhook\n` +
+        `  1. Set these env vars on the minio container and restart it (docker-compose.yml does):\n` +
+        `       MINIO_NOTIFY_WEBHOOK_ENABLE_RESIZER=on\n` +
+        `       MINIO_NOTIFY_WEBHOOK_ENDPOINT_RESIZER=http://server:3000/selfhosted/minio-events\n` +
         `  2. Re-run this bootstrap script so it can bind the "${bucket}" bucket to the webhook target.\n` +
         `  Uploads still work without this - images just won't be auto-resized.`
     );
@@ -174,14 +174,18 @@ export async function createBuckets(): Promise<void> {
 
   console.log("MinIO bucket bootstrap summary:");
   for (const r of results) {
-    console.log(`  ${r.status === "failed" ? "FAILED " : r.status === "created" ? "created" : "skipped"} ${r.bucket}${r.error ? ` (${r.error})` : ""}`);
+    console.log(
+      `  ${r.status === "failed" ? "FAILED " : r.status === "created" ? "created" : "skipped"} ${r.bucket}${r.error ? ` (${r.error})` : ""}`
+    );
   }
 
   await applyResizerWebhookNotification(client, resizerWebhookBucket);
 
   const failures = results.filter((r) => r.status === "failed");
   if (failures.length > 0) {
-    throw new Error(`${failures.length} bucket(s) failed to create: ${failures.map((f) => f.bucket).join(", ")}`);
+    throw new Error(
+      `${failures.length} bucket(s) failed to create: ${failures.map((f) => `${f.bucket} (${f.error})`).join(", ")}`
+    );
   }
 }
 

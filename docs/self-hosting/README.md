@@ -1,0 +1,173 @@
+# Self-hosting Liftosaur
+
+Run the whole app — web UI, API, database, object storage, background jobs — on your own
+machine with Docker Compose. No AWS account, no cloud services.
+
+For the engineering breakdown of how this works (what was AWS-specific and how each piece
+was replaced), see [PLAN.md](./PLAN.md).
+
+## Prerequisites
+
+- Docker Engine 24+ with the Compose plugin (`docker compose version`)
+- ~2 GB free RAM and ~4 GB disk for the images and volumes
+- The first build compiles the web bundle and the server bundle from source and takes
+  several minutes
+
+## Quickstart
+
+```bash
+# from a clone of this repository, at its root
+cp env.example .env
+
+# generate the three required secrets and paste them into .env
+openssl rand -hex 32   # LIFTOSAUR_COOKIE_SECRET
+openssl rand -hex 32   # LIFTOSAUR_CRYPTO_KEY
+openssl rand -hex 32   # LIFTOSAUR_API_KEY
+# also replace AWS_SECRET_ACCESS_KEY (MinIO's root password) and LIFTOSAUR_WEBHOOK_TOKEN
+
+docker compose up -d --build
+```
+
+Then open:
+
+- the app: <http://localhost> (or whatever `HOST` you set)
+- sent emails: <http://localhost:8025> (mailpit)
+- health check: <http://localhost/healthz>
+
+The `bootstrap` service runs once on every `up`, creates the DynamoDB tables and the MinIO
+buckets, and exits 0. Watch it with `docker compose logs bootstrap`.
+
+To use a port other than 80, set **both** `HTTP_PORT` and `HOST` — the public URL is
+compiled into the images, so `HTTP_PORT=8080` needs `HOST=http://localhost:8080` and a
+rebuild (`docker compose up -d --build`).
+
+## What you get
+
+| Works out of the box | Notes |
+|---|---|
+| Email/password signup and login | Verification and password-reset emails go through SMTP; with the bundled mailpit they land in the web UI at :8025. |
+| All premium features | Self-hosted builds unlock the subscription gate on both the client and the server. |
+| Programs, workouts, history, sync, sharing | Full parity with the hosted app. |
+| User image uploads and profile images | Uploads go to MinIO; the resizer runs in-process on the server via a MinIO bucket notification. |
+| Public API and admin endpoints | Guarded by `LIFTOSAUR_API_KEY`. |
+| Daily stats job | The `cron` service; payment reconciliation stays off unless IAP env vars are set. |
+
+| Needs extra setup | What to do |
+|---|---|
+| AI program generation | Set `ANTHROPIC_API_KEY` (and optionally `OPENAI_API_KEY`) in `.env` and restart. |
+| Real email delivery | Point `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`SMTP_FROM` at your relay and remove the `mailpit` service. |
+| "Sign in with Google/Apple" buttons | The server verifies tokens against Google's and Apple's public endpoints, but the buttons need OAuth client IDs registered for *your* domain and compiled into the web bundle. Email/password works without this. |
+| Error reporting | Set `ROLLBAR_SERVER_TOKEN` to your own Rollbar project. Off by default — nothing is reported anywhere. |
+
+Not applicable when self-hosting: in-app purchases, and the iOS/Android apps from the
+stores (they are compiled against `liftosaur.com` and cannot be pointed elsewhere without
+building the app yourself).
+
+## Services
+
+| Service | Image | Ports | Purpose |
+|---|---|---|---|
+| `web` | built from `selfhosted/docker/Dockerfile.web` | `${HTTP_PORT:-80}` → 80 | nginx: serves the static bundle, proxies API/page routes to `server`, `/stream/*` to the streaming port, and presigned S3 URLs to `minio`. |
+| `server` | built from `selfhosted/docker/Dockerfile.server` | internal 3000 / 3001 | The same handlers that run as Lambdas in the hosted app: main API on 3000, AI streaming on 3001, plus `/healthz` and the MinIO webhook endpoint. |
+| `cron` | same image, `node lambda/cron.js` | — | Daily stats job (23:40 UTC); weekly payment reconciliation only when IAP env vars are set. |
+| `bootstrap` | same image, `node lambda/bootstrap.js` | — | One-shot, idempotent: 23 DynamoDB tables (+GSIs, TTL) and 10 MinIO buckets with their policies and the resizer notification. |
+| `dynamodb` | `amazon/dynamodb-local` | internal 8000 | Database, persisted in the `dynamodb-data` volume. |
+| `minio` | `minio/minio` | internal 9000 / 9001 | S3-compatible object storage, persisted in the `minio-data` volume. |
+| `mailpit` | `axllent/mailpit` | `${MAILPIT_UI_PORT:-8025}` → 8025 | Development mail catcher: accepts every message and shows it in a web UI instead of delivering it. Replace it with a real SMTP relay for anything beyond a trial. |
+
+MinIO's console (port 9001) and SMTP (port 1025) are not published to the host. Add a
+`ports:` entry to those services in `docker-compose.yml` if you want them.
+
+## Configuration
+
+Every variable lives in `.env`; `env.example` documents all of them. The required ones are
+`HOST`, `LIFTOSAUR_COOKIE_SECRET`, `LIFTOSAUR_CRYPTO_KEY`, `LIFTOSAUR_API_KEY`,
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (MinIO's root credentials — not real AWS
+keys).
+
+Two things are compiled into the images rather than read at runtime: `HOST` (as the app's
+API/asset origin) and `LIFTOSAUR_SELF_HOSTED`. Changing `HOST` therefore requires
+`docker compose up -d --build`, not just a restart.
+
+Note that variables exported in your shell override `.env` in Compose. If you already have
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` exported for real AWS work, unset them (or run
+Compose from a shell that does not have them) — otherwise they silently become MinIO's root
+credentials.
+
+## Data and backups
+
+All state lives in two named volumes, `liftosaur_dynamodb-data` and `liftosaur_minio-data`
+(the `liftosaur_` prefix is the Compose project name — the directory name).
+
+Back them up with the containers stopped:
+
+```bash
+docker compose stop
+docker run --rm -v liftosaur_dynamodb-data:/data -v "$PWD/backup":/backup alpine \
+  tar czf /backup/dynamodb-data.tar.gz -C /data .
+docker run --rm -v liftosaur_minio-data:/data -v "$PWD/backup":/backup alpine \
+  tar czf /backup/minio-data.tar.gz -C /data .
+docker compose start
+```
+
+Restore by untarring into the same volumes:
+
+```bash
+docker compose down
+docker run --rm -v liftosaur_dynamodb-data:/data -v "$PWD/backup":/backup alpine \
+  sh -c "rm -rf /data/* && tar xzf /backup/dynamodb-data.tar.gz -C /data"
+docker run --rm -v liftosaur_minio-data:/data -v "$PWD/backup":/backup alpine \
+  sh -c "rm -rf /data/* && tar xzf /backup/minio-data.tar.gz -C /data"
+docker compose up -d
+```
+
+`docker compose down` keeps the volumes; `docker compose down -v` deletes them and all
+your data with them.
+
+## Running behind HTTPS
+
+The `web` container speaks plain HTTP on port 80 by design. Put a TLS-terminating reverse
+proxy (Caddy, Traefik, nginx, a cloud load balancer) in front of it:
+
+1. Set `HOST=https://lift.example.com` in `.env`.
+2. Set `HTTP_PORT` to a local-only port, e.g. `8080`, and point the proxy at it.
+3. Rebuild: `docker compose up -d --build` (the public URL is baked into both images).
+4. Have the proxy forward `Host` unchanged and set `X-Forwarded-Proto: https` — nginx
+   passes both through, and presigned upload URLs are validated against the `Host` header.
+
+Caddy example:
+
+```
+lift.example.com {
+  reverse_proxy 127.0.0.1:8080
+}
+```
+
+WebSockets are not used, but AI generation streams over SSE on `/stream/*` — disable
+response buffering for that path if your proxy buffers by default.
+
+## Troubleshooting
+
+**`docker compose logs bootstrap` shows "not reachable yet"** — normal on a cold start; it
+retries for up to a minute while DynamoDB Local finishes booting. If it ends with
+`Self-hosted bootstrap failed`, the message names the cause (a missing env var, or the
+actual DynamoDB/MinIO error).
+
+**"Missing required environment variable LIFTOSAUR_COOKIE_SECRET" in the server logs** —
+`.env` is missing a required secret, or Compose was run from a different directory. `docker compose config` prints the
+resolved environment for every service.
+
+**Uploaded images 403 or never resize** — the presigned URL must be served by the same
+origin as `HOST`. Check that `S3_PUBLIC_ENDPOINT` equals `HOST` (`docker compose config`),
+and that `docker compose logs bootstrap` says "Registered resizer webhook notification".
+MinIO logs a warning about an unreachable webhook endpoint if it starts before `server` —
+it reconnects on its own.
+
+**The app loads but every API call goes to `liftosaur.com`** — the web image was built with
+a different `HOST`. Rebuild with `docker compose up -d --build`.
+
+**Emails never arrive** — with the default config they are not supposed to leave the stack;
+open mailpit at <http://localhost:8025>. For real delivery, set `SMTP_*` to your relay.
+
+**Reset everything** — `docker compose down -v && docker compose up -d --build` gives you a
+clean database and empty buckets.

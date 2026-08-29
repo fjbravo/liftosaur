@@ -157,48 +157,61 @@ All inert unless the env var is set; AWS path unchanged otherwise.
       generators + webpack bundle → slim runtime with sharp/resvg only),
       `IMGPREFIX=lambda/` for the image generators.
 
-### WP3 — Bootstrap and scheduled jobs
+### WP3 — Bootstrap and scheduled jobs ✅ done
 
-- [ ] `selfhosted/bootstrap/createTables.ts` — create all 22 tables + GSIs +
+- [x] `selfhosted/bootstrap/createTables.ts` — create all 23 tables + GSIs +
       TTL specs (prod names) against `DYNAMODB_ENDPOINT`; idempotent.
-- [ ] `selfhosted/bootstrap/createBuckets.ts` — create the 10 buckets in MinIO;
+- [x] `selfhosted/bootstrap/createBuckets.ts` — create the 10 buckets in MinIO;
       set `assets`/`userimages`/`static` to public-read (bucket policy);
-      register the `userimages` webhook notification for `user-uploads/`.
-- [ ] `selfhosted/cron.ts` — long-running scheduler: stats job daily 23:40 UTC;
+      register the `userimages` webhook notification for `user-uploads/`
+      (gated on `MINIO_NOTIFY_WEBHOOK_ENABLE_RESIZER=true`).
+- [x] `selfhosted/bootstrap/index.ts` — runs both, retrying while DynamoDB/MinIO
+      are still booting and failing fast on everything else.
+- [x] `selfhosted/cron.ts` — long-running scheduler: stats job daily 23:40 UTC;
       payment reconciliation Sundays 06:00 UTC only when Apple/Google IAP env
       is configured.
 
-### WP4 — Frontend build + web container
+### WP4 — Frontend build + web container ✅ done
 
-- [ ] `webpack.config.js` — allow env overrides (`LIFTOSAUR_HOST`,
+- [x] `webpack.config.js` — allow env overrides (`LIFTOSAUR_HOST`,
       `LIFTOSAUR_API_HOST`, `LIFTOSAUR_STREAMING_API_HOST`) for the
       `DefinePlugin` globals, and a `__SELF_HOSTED__` define.
-- [ ] Client-side unlock: `Subscriptions_hasSubscription()` returns `true` when
+- [x] Client-side unlock: `Subscriptions_hasSubscription()` returns `true` when
       built with `__SELF_HOSTED__`.
-- [ ] `selfhosted/docker/Dockerfile.web` — build the web bundle with the env
+- [x] `selfhosted/docker/Dockerfile.web` — build the web bundle with the env
       overrides, serve `dist/` with nginx.
-- [ ] `selfhosted/docker/nginx.conf` — port the CloudFront-function routing:
+- [x] `selfhosted/docker/nginx.conf` — port the CloudFront-function routing:
       static assets with long cache; `/`→`/main`, `/app`→`/app/`, `/docs`→`/doc`,
       `/record`→`/api/record`, `/profileimage/:id` rewrites; proxy API + page
       routes to server, `/stream/*` to the streaming port, `/userimages/*` to
       MinIO; charset headers.
+- [x] Same-origin presigned URLs: `/liftosauruserimages/` and
+      `/liftosaurexceptions2/` proxy to MinIO path-style with the path and the
+      public `Host` header untouched, since SigV4 covers both.
 
-### WP5 — Compose stack + operator docs
+### WP5 — Compose stack + operator docs ✅ done
 
-- [ ] `docker-compose.yml` — services: `web`, `server`, `cron`, `dynamodb`
+- [x] `selfhosted/webpack.server.config.js` — multi-entry (`server`,
+      `bootstrap`, `cron`), so one image ships all three commands.
+- [x] `docker-compose.yml` — services: `web`, `server`, `cron`, `dynamodb`
       (amazon/dynamodb-local, persistent volume), `minio` (+persistent volume),
       `mailpit`, one-shot `bootstrap`.
-- [ ] `selfhosted/.env.example` — full env contract with generated-secret
-      instructions.
-- [ ] `docs/self-hosting/README.md` — quickstart (clone → set env → 
+- [x] `env.example` — full env contract with generated-secret instructions.
+      (At the repo root, dot-less: `.env.example` is unwritable under the repo's
+      `Read(.env.*)` permission deny rule.)
+- [x] `docs/self-hosting/README.md` — quickstart (clone → set env → 
       `docker compose up`), backup/restore notes, enabling optional features.
 
 ### WP6 — Validation
 
-- [ ] `tsc --noEmit` for lambda + selfhosted code; `npm run lint` on changed files.
+- [x] `tsc --noEmit` for lambda + selfhosted code; `npm run lint` on changed files.
+- [x] `docker compose config` parses; nginx config passes `nginx -t`, and the two
+      presigned-URL locations were exercised against a stub upstream (path, query
+      and `Host` forwarded verbatim).
 - [ ] Unit tests (`npm test`) unaffected.
 - [ ] Compose stack boots end-to-end where an environment with Docker is
-      available (signup → login → save workout → image upload).
+      available (signup → login → save workout → image upload). Not possible in
+      the build sandbox: the Docker CLI is present but there is no daemon.
 
 ## Environment variable contract
 
@@ -219,6 +232,9 @@ All inert unless the env var is set; AWS path unchanged otherwise.
 | `PORT` / `STREAMING_PORT` | no | Server listen ports, default 3000 / 3001. |
 | `LIFTOSAUR_WEBHOOK_TOKEN` | no | When set, the MinIO bucket-notification endpoint requires `Authorization: Bearer <token>`. |
 | `COMMIT_HASH` / `FULL_COMMIT_HASH` | no | Build identifier, defaults to `selfhosted`. |
+| `HTTP_PORT` | no | Host port the `web` container publishes, default `80`. Compose-only; keep `HOST` in sync with it. |
+| `MAILPIT_UI_PORT` | no | Host port for mailpit's web UI, default `8025`. Compose-only. |
+| `MINIO_NOTIFY_WEBHOOK_ENABLE_RESIZER` | no | Set to `true` on the `bootstrap` job to bind the `liftosauruserimages` bucket to MinIO's `RESIZER` webhook target (compose sets it). |
 | Apple/Google IAP vars | no | Only for App Store / Play Store IAP verification — not meaningful for typical self-hosting. |
 
 ## Known gaps / follow-ups (out of scope for the first pass)

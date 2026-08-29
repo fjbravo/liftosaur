@@ -1,0 +1,146 @@
+# Liftosaur, self-hosted. See docs/self-hosting/README.md for the quickstart.
+#
+#   cp env.example .env   # then fill in the secrets
+#   docker compose up -d --build
+#
+# Compose reads .env from this directory automatically; every ${VAR} below comes from there.
+# Note that variables exported in your shell win over .env (relevant for AWS_ACCESS_KEY_ID
+# and AWS_SECRET_ACCESS_KEY, which here are MinIO's root credentials, not real AWS ones).
+
+x-server-build: &server-build
+  context: .
+  dockerfile: selfhosted/docker/Dockerfile.server
+  args:
+    LIFTOSAUR_HOST: ${HOST}
+    LIFTOSAUR_API_HOST: ${HOST}
+    LIFTOSAUR_STREAMING_API_HOST: ${HOST}
+    LIFTOSAUR_SELF_HOSTED: "true"
+
+x-server-env: &server-env
+  LIFTOSAUR_SELF_HOSTED: "true"
+  HOST: ${HOST}
+  LIFTOSAUR_COOKIE_SECRET: ${LIFTOSAUR_COOKIE_SECRET}
+  LIFTOSAUR_CRYPTO_KEY: ${LIFTOSAUR_CRYPTO_KEY}
+  LIFTOSAUR_API_KEY: ${LIFTOSAUR_API_KEY}
+  DYNAMODB_ENDPOINT: http://dynamodb:8000
+  S3_ENDPOINT: http://minio:9000
+  # Presigned URLs are handed to the browser, so they must point at the public origin;
+  # nginx proxies /liftosauruserimages/ and /liftosaurexceptions2/ back to MinIO unmodified.
+  S3_PUBLIC_ENDPOINT: ${HOST}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+  AWS_REGION: ${AWS_REGION:-us-west-2}
+  SMTP_HOST: ${SMTP_HOST:-mailpit}
+  SMTP_PORT: ${SMTP_PORT:-1025}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASS: ${SMTP_PASS:-}
+  SMTP_FROM: ${SMTP_FROM:-liftosaur@localhost}
+  LIFTOSAUR_WEBHOOK_TOKEN: ${LIFTOSAUR_WEBHOOK_TOKEN:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ROLLBAR_SERVER_TOKEN: ${ROLLBAR_SERVER_TOKEN:-}
+  COMMIT_HASH: ${COMMIT_HASH:-selfhosted}
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: selfhosted/docker/Dockerfile.web
+      args:
+        LIFTOSAUR_HOST: ${HOST}
+        LIFTOSAUR_API_HOST: ${HOST}
+        LIFTOSAUR_STREAMING_API_HOST: ${HOST}
+        LIFTOSAUR_SELF_HOSTED: "true"
+        COMMIT_HASH: ${COMMIT_HASH:-selfhosted}
+    image: liftosaur-web
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+  server:
+    build: *server-build
+    image: liftosaur-server
+    environment: *server-env
+    depends_on:
+      dynamodb:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # cron and bootstrap run the server image with a different entrypoint. They repeat its build
+  # definition rather than referencing the tag alone, because compose tries to *pull* an image
+  # that no service builds, and liftosaur-server exists only locally. Every layer is shared
+  # with the server build, so the repeats are cache hits.
+  cron:
+    build: *server-build
+    image: liftosaur-server
+    command: ["node", "lambda/cron.js"]
+    environment: *server-env
+    depends_on:
+      - server
+    restart: unless-stopped
+
+  # One-shot, idempotent: creates the DynamoDB tables and the MinIO buckets. Compose runs it
+  # on every `up`; after the first run it reports everything as "skipped" and exits 0.
+  bootstrap:
+    build: *server-build
+    image: liftosaur-server
+    command: ["node", "lambda/bootstrap.js"]
+    environment:
+      <<: *server-env
+      # Binds the liftosauruserimages bucket to MinIO's RESIZER webhook target below.
+      MINIO_NOTIFY_WEBHOOK_ENABLE_RESIZER: "true"
+    depends_on:
+      dynamodb:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "/home/dynamodblocal/data"]
+    working_dir: /home/dynamodblocal
+    # A named volume mounted on a path the image does not ship is created root-owned, and the
+    # image's default `dynamodblocal` user then cannot write the shared database file.
+    user: root
+    volumes:
+      - dynamodb-data:/home/dynamodblocal/data
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY}
+      # Bucket notifications for user-uploads/*, consumed in-process by the image resizer.
+      # A single-word token is sent as `Authorization: Bearer <token>`, which is what the
+      # server checks when LIFTOSAUR_WEBHOOK_TOKEN is set.
+      MINIO_NOTIFY_WEBHOOK_ENABLE_RESIZER: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_RESIZER: http://server:3000/selfhosted/minio-events
+      MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_RESIZER: ${LIFTOSAUR_WEBHOOK_TOKEN:-}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # Development/trial mail catcher: it accepts every message and shows it in a web UI instead
+  # of delivering it. Point SMTP_* at a real relay for production and delete this service.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    restart: unless-stopped
+
+volumes:
+  dynamodb-data:
+  minio-data:

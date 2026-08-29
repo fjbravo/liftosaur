@@ -262,12 +262,16 @@ export async function createTables(): Promise<void> {
 
   console.log("DynamoDB bootstrap summary:");
   for (const r of results) {
-    console.log(`  ${r.status === "failed" ? "FAILED " : r.status === "created" ? "created" : "skipped"} ${r.tableName}${r.error ? ` (${r.error})` : ""}`);
+    console.log(
+      `  ${r.status === "failed" ? "FAILED " : r.status === "created" ? "created" : "skipped"} ${r.tableName}${r.error ? ` (${r.error})` : ""}`
+    );
   }
 
   const failures = results.filter((r) => r.status === "failed");
   if (failures.length > 0) {
-    throw new Error(`${failures.length} table(s) failed to create: ${failures.map((f) => f.tableName).join(", ")}`);
+    throw new Error(
+      `${failures.length} table(s) failed to create: ${failures.map((f) => `${f.tableName} (${f.error})`).join(", ")}`
+    );
   }
 }
 

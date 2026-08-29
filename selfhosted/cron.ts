@@ -42,7 +42,9 @@ function scheduleJob(job: IJob): void {
 
   const next = nextOccurrence(job, new Date());
   const delayMs = next.getTime() - Date.now();
-  console.log(`[cron] next run of "${job.name}" scheduled for ${next.toISOString()} (in ${Math.round(delayMs / 1000 / 60)} min)`);
+  console.log(
+    `[cron] next run of "${job.name}" scheduled for ${next.toISOString()} (in ${Math.round(delayMs / 1000 / 60)} min)`
+  );
   setTimeout(() => {
     runAndReschedule().catch((e) => {
       console.error(`[cron] unexpected error scheduling job "${job.name}":`, e);
