@@ -1,0 +1,236 @@
+# Self-Hosted Containerized Deployment — Plan
+
+This document is the working breakdown for converting Liftosaur into a fully
+containerized deployment that can be self-hosted with Docker Compose. It is the
+source of truth for this effort: every required change is listed here with its
+target files, and the checklists track completion.
+
+## Goals and decisions
+
+| Decision | Choice |
+|---|---|
+| Database | **DynamoDB Local** container — the 25 DAOs keep working unchanged; only the client endpoint is configurable. |
+| Object storage | **MinIO** (S3-compatible), with `forcePathStyle` and a separate public endpoint for presigned URLs. |
+| Email | **SMTP** (nodemailer) when `SMTP_HOST` is set; mailpit in the default compose stack. |
+| Secrets | Environment variables (no AWS Secrets Manager). |
+| Cloud-tied features | Optional via env config: Apple/Google sign-in, IAP subscriptions, AI/LLM, web push, Rollbar. Missing config degrades gracefully; premium features are unlocked by default in self-hosted mode. |
+| Orchestration | **docker-compose.yml** at the repo root (`selfhosted/` holds everything else). |
+| AWS deployment | Untouched. All changes are env-gated; with no new env vars set, behavior is identical to today. |
+
+## Target architecture
+
+```
+                        ┌────────────────────────────────────────────┐
+ browser ──► :80/:443 ─►│ web (nginx)                                │
+                        │  - serves webpack dist (static assets)     │
+                        │  - CloudFront-function rewrites ported     │
+                        │  - /api/*, /, /app, page routes ─► server  │
+                        │  - /stream/* ─► server (streaming port)    │
+                        │  - /userimages/* ─► minio                  │
+                        └───────┬──────────────────┬─────────────────┘
+                                │                  │
+                  ┌─────────────▼──────┐   ┌───────▼────────┐
+                  │ server (node)      │   │ minio          │
+                  │  lambda/index.ts   │   │  10 buckets    │
+                  │  streamingHandler  │   └───────▲────────┘
+                  └───┬────────┬───────┘           │
+                      │        │            bucket events (webhook)
+              ┌───────▼──┐  ┌──▼────────┐          │
+              │ dynamodb │  │ mailpit / │   image resizer endpoint
+              │ local    │  │ real SMTP │   (server, in-process)
+              └──────────┘  └───────────┘
+                  ▲
+        ┌─────────┴─────────┐
+        │ bootstrap (once)  │  creates tables/GSIs/TTL + buckets
+        │ cron (node)       │  stats job daily; reconcile optional
+        └───────────────────┘
+```
+
+The server container runs the **same** `lambda/index.ts` and
+`lambda/streamingHandler.ts` handlers used in AWS, wrapped in a plain Node HTTP
+server modeled on `devserver.ts` (which already does the
+HTTP↔APIGatewayProxyEvent translation and stubs `awslambda.streamifyResponse`).
+
+## Inventory: what couples the app to AWS today
+
+Full details from the code audit; file references are the anchor points for the
+changes below.
+
+1. **Service clients** — all constructed with `new XClient({})` (default AWS
+   endpoint/credential chain), behind DI interfaces in `lambda/utils/di.ts`:
+   `dynamo.ts`, `s3.ts`, `ses.ts`, `secrets.ts`, `lambda.ts`, `cloudwatch.ts`.
+   Even `IS_LOCAL=true` dev mode hits real AWS today — there is no local-AWS
+   code path anywhere.
+2. **`ILambdaUtil.invoke` has zero production call sites** — vestigial; safe to
+   no-op in self-hosted mode.
+3. **DynamoDB**: 22 tables (+GSIs, 4 with TTL) defined in
+   `liftosaur-cdk/liftosaur-cdk.ts`; DAO-side names match 1:1 (`lftPrograms` is
+   unreferenced legacy). The bootstrap script must recreate this schema exactly
+   (prod names — self-hosted runs with `IS_DEV` unset).
+4. **S3**: 10 buckets (`lambda/dao/buckets.ts`). Presigned URLs at exactly two
+   call sites: upload to `userimages` (`lambda/index.ts` `postImageUploadUrlHandler`)
+   and download from `exceptions`. `assets`, `userimages`, `static` are
+   public-read. `getUserImagesPrefix()` hardcodes `www.liftosaur.com/userimages/`.
+5. **Secrets**: one JSON blob in Secrets Manager. Essential for core operation:
+   `cookieSecret` (all session auth), `apiKey` (admin/dashboards). `cryptoKey`,
+   `webpushrKey/AuthToken` have no production call sites. Everything else gates
+   an optional feature (Apple/Google IAP, AI keys, OTA update signing).
+6. **Email**: 3 transactional emails (signup verification, set-password link,
+   forgot-password), all plain text from `info@liftosaur.com`, all through the
+   single `ISesUtil.sendEmail`.
+7. **Auth**: email/password is fully self-contained (scrypt + DynamoDB tokens +
+   cookie JWT). Google/Apple sign-in verify tokens against the providers'
+   *public* endpoints — no server-held secret needed; buttons simply don't work
+   without client-side OAuth registration. Only IAP verification needs secrets.
+8. **Subscription gating** — single choke points on both sides:
+   client `src/utils/subscriptions.ts` `Subscriptions_hasSubscription()` (pure
+   function, 30+ callers); server `lambda/utils/subscriptions.ts`
+   `Subscriptions.hasSubscription()` (gates AI streaming + public API).
+9. **Scheduled jobs** (EventBridge): stats report daily 23:40 UTC
+   (`statsLambdaHandler`); Apple/Google payment reconciliation Sundays 06:00 UTC
+   (optional without IAP).
+10. **imageResizer** (`lambda/imageResizer.ts`): S3 `ObjectCreated`
+    (prefix `user-uploads/`) → sharp resize to 600×900, overwrite in place.
+    Needs MinIO bucket webhook → server endpoint building a synthetic `S3Event`.
+11. **CloudFront Functions** (inline JS in the CDK, no repo source files):
+    URL rewrites (`/`→`/main`, `/app`→`/app/`, `/record`→`/api/record`,
+    `/profileimage/:id`→query form, `/docs`→`/doc`), charset headers, static
+    prefix stripping, and synthetic `X-Auth-State`/`X-Device-Type` cache-key
+    headers. Must be ported to nginx (headers can be computed in the Node server
+    itself, as `devserver.ts` already does).
+12. **Frontend host resolution** is baked at build time via webpack
+    `DefinePlugin` (`__HOST__`, `__API_HOST__`, `__STREAMING_API_HOST__`),
+    selected by `process.env.STAGE` / `localdomain.js`. The server already
+    honors a runtime `HOST` env var (`process.env.HOST`).
+13. **Rollbar**: hardcoded access tokens in `lambda/index.ts` and
+    `lambda/streamingHandler.ts` — a self-hosted fork would report errors to the
+    upstream account unless env-gated.
+14. **Dead/skippable infra**: Cloudflare Worker (`wrangler.toml` — its
+    `webpack.server.config.js` was never committed; route superseded by
+    `api3.liftosaur.com`), `_redirects`/`_headers` (Netlify-era), CodePipeline,
+    sourcemap upload, watch-bundle publishing.
+
+## Work packages
+
+### WP1 — Backend service adapters (env-gated) ✅ done
+
+All inert unless the env var is set; AWS path unchanged otherwise.
+
+- [x] `lambda/utils/dynamo.ts` — honors `DYNAMODB_ENDPOINT`.
+- [x] `lambda/utils/s3.ts` — honors `S3_ENDPOINT` (+`forcePathStyle`); uses
+      `S3_PUBLIC_ENDPOINT` for presigned-URL generation so browser-facing URLs
+      are host-reachable.
+- [x] `lambda/utils/secrets.ts` — `EnvSecretsUtil` selected in `buildDi` when
+      `LIFTOSAUR_SELF_HOSTED=true` (or `SECRETS_SOURCE=env`):
+      `LIFTOSAUR_COOKIE_SECRET`, `LIFTOSAUR_CRYPTO_KEY`, `LIFTOSAUR_API_KEY`
+      required (clear error naming the variable); `OPENAI_API_KEY`,
+      `ANTHROPIC_API_KEY`, Apple/Google/webpushr/updates vars optional
+      (empty when unset).
+- [x] `lambda/utils/ses.ts` — SMTP via nodemailer when `SMTP_HOST` is set
+      (`SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`; auth omitted unless
+      both user and pass are set, so mailpit works).
+- [x] `lambda/utils/lambda.ts` — warn + no-op in self-hosted mode (dead code).
+- [x] `lambda/utils/cloudwatch.ts` — "not supported in self-hosted mode" no-op.
+
+### WP2 — Containerized server ✅ done
+
+- [x] `selfhosted/server.ts` — plain-HTTP entrypoint based on `devserver.ts`:
+      main API on `PORT` (3000), streaming handler on `STREAMING_PORT` (3001);
+      computes `x-auth-state`/`x-device-type` headers; no TLS (nginx terminates),
+      commit hash from `COMMIT_HASH`/`FULL_COMMIT_HASH` env, binds `0.0.0.0`,
+      `GET /healthz`, graceful shutdown on SIGTERM/SIGINT.
+- [x] MinIO bucket-notification endpoint on the server (`POST
+      /selfhosted/minio-events`, also accepted at `/api/minio-resize-webhook`):
+      MinIO webhook payload → `S3Event` → `lambda/imageResizer.ts` handler.
+      Optional `Authorization: Bearer $LIFTOSAUR_WEBHOOK_TOKEN`.
+- [x] Server-side self-hosted subscription unlock: short-circuit
+      `Subscriptions.hasSubscription` when `LIFTOSAUR_SELF_HOSTED=true` (the one
+      choke point behind the streaming AI, public API and MCP gates).
+- [x] Env-gate Rollbar (`ROLLBAR_SERVER_TOKEN`; no client and no wrapper at all
+      in self-hosted mode without it) in `lambda/index.ts` and
+      `lambda/streamingHandler.ts`.
+- [x] `getUserImagesPrefix()` — honor `HOST` env in self-hosted mode.
+- [x] `selfhosted/webpack.server.config.js` — reuses the lambda webpack config
+      with `selfhosted/server.ts` as the entry, emitting `dist-selfhosted/`
+      with the same layout as `dist-lambda/`. `npm run build:selfhosted`.
+- [x] `selfhosted/docker/Dockerfile.server` — multi-stage build (full deps +
+      generators + webpack bundle → slim runtime with sharp/resvg only),
+      `IMGPREFIX=lambda/` for the image generators.
+
+### WP3 — Bootstrap and scheduled jobs
+
+- [ ] `selfhosted/bootstrap/createTables.ts` — create all 22 tables + GSIs +
+      TTL specs (prod names) against `DYNAMODB_ENDPOINT`; idempotent.
+- [ ] `selfhosted/bootstrap/createBuckets.ts` — create the 10 buckets in MinIO;
+      set `assets`/`userimages`/`static` to public-read (bucket policy);
+      register the `userimages` webhook notification for `user-uploads/`.
+- [ ] `selfhosted/cron.ts` — long-running scheduler: stats job daily 23:40 UTC;
+      payment reconciliation Sundays 06:00 UTC only when Apple/Google IAP env
+      is configured.
+
+### WP4 — Frontend build + web container
+
+- [ ] `webpack.config.js` — allow env overrides (`LIFTOSAUR_HOST`,
+      `LIFTOSAUR_API_HOST`, `LIFTOSAUR_STREAMING_API_HOST`) for the
+      `DefinePlugin` globals, and a `__SELF_HOSTED__` define.
+- [ ] Client-side unlock: `Subscriptions_hasSubscription()` returns `true` when
+      built with `__SELF_HOSTED__`.
+- [ ] `selfhosted/docker/Dockerfile.web` — build the web bundle with the env
+      overrides, serve `dist/` with nginx.
+- [ ] `selfhosted/docker/nginx.conf` — port the CloudFront-function routing:
+      static assets with long cache; `/`→`/main`, `/app`→`/app/`, `/docs`→`/doc`,
+      `/record`→`/api/record`, `/profileimage/:id` rewrites; proxy API + page
+      routes to server, `/stream/*` to the streaming port, `/userimages/*` to
+      MinIO; charset headers.
+
+### WP5 — Compose stack + operator docs
+
+- [ ] `docker-compose.yml` — services: `web`, `server`, `cron`, `dynamodb`
+      (amazon/dynamodb-local, persistent volume), `minio` (+persistent volume),
+      `mailpit`, one-shot `bootstrap`.
+- [ ] `selfhosted/.env.example` — full env contract with generated-secret
+      instructions.
+- [ ] `docs/self-hosting/README.md` — quickstart (clone → set env → 
+      `docker compose up`), backup/restore notes, enabling optional features.
+
+### WP6 — Validation
+
+- [ ] `tsc --noEmit` for lambda + selfhosted code; `npm run lint` on changed files.
+- [ ] Unit tests (`npm test`) unaffected.
+- [ ] Compose stack boots end-to-end where an environment with Docker is
+      available (signup → login → save workout → image upload).
+
+## Environment variable contract
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `LIFTOSAUR_SELF_HOSTED` | yes (`true`) | Master switch: env secrets, premium unlock, Rollbar/cloud no-ops. |
+| `HOST` | yes | Public base URL of the deployment (e.g. `https://lift.example.com`). Already honored server-side. |
+| `LIFTOSAUR_COOKIE_SECRET` | yes | JWT signing for session cookies. |
+| `LIFTOSAUR_API_KEY` | yes | Admin/dashboard endpoint key. |
+| `LIFTOSAUR_CRYPTO_KEY` | yes | Generated random string (part of the secrets contract; currently unused by any code path but validated at startup). |
+| `DYNAMODB_ENDPOINT` | yes | e.g. `http://dynamodb:8000`. |
+| `S3_ENDPOINT` / `S3_PUBLIC_ENDPOINT` | yes / recommended | MinIO internal endpoint / host-reachable endpoint for presigned URLs. |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | yes | MinIO credentials; any values for DynamoDB Local. |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | recommended | Transactional email; without it, email verification/password reset are disabled (signup/login still work). |
+| `ANTHROPIC_API_KEY` | no | Enables the AI Liftoscript generator. |
+| `OPENAI_API_KEY` | no | Alternate LLM provider. |
+| `ROLLBAR_SERVER_TOKEN` | no | Error reporting (off by default). |
+| `PORT` / `STREAMING_PORT` | no | Server listen ports, default 3000 / 3001. |
+| `LIFTOSAUR_WEBHOOK_TOKEN` | no | When set, the MinIO bucket-notification endpoint requires `Authorization: Bearer <token>`. |
+| `COMMIT_HASH` / `FULL_COMMIT_HASH` | no | Build identifier, defaults to `selfhosted`. |
+| Apple/Google IAP vars | no | Only for App Store / Play Store IAP verification — not meaningful for typical self-hosting. |
+
+## Known gaps / follow-ups (out of scope for the first pass)
+
+- **SEO/content literals**: dozens of `https://www.liftosaur.com/...` canonical
+  URLs, OG tags, and doc links across `src/pages/**` are content, not infra —
+  functionality is unaffected; a white-labeling pass can template them later.
+- **Native mobile apps**: iOS/Android builds bake `__API_HOST__` at build time;
+  pointing the apps at a self-hosted server requires a custom app build.
+- **`lftPrograms` table**: unreferenced legacy; created for parity only.
+- **Watch bundle / OTA updates**: `updatesDao` paths exist under the `static`
+  bucket, but OTA signing (`LIFTOSAUR_UPDATES_PRIVATE_KEY`) is optional and off
+  by default.
+- **Repo hygiene**: `wrangler.toml` (dead Cloudflare Worker) and
+  `_redirects`/`_headers` (Netlify-era) are candidates for removal.

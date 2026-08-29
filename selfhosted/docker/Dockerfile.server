@@ -1,0 +1,41 @@
+# Node 24 matches the AWS Lambda runtime (NODEJS_24_X) the same handlers run on in production.
+FROM node:24-bookworm AS build
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+COPY . .
+# Generates localdomain.js and src/generated/* (both gitignored), typechecks, then bundles
+# selfhosted/server.ts into dist-selfhosted/lambda/server.js with the same webpack setup as the lambda build.
+RUN npm run build:selfhosted
+
+# Only the three externals the bundle keeps out of the build (sharp, @resvg/resvg-wasm, lens-shmens).
+FROM node:24-bookworm-slim AS runtimedeps
+WORKDIR /app
+COPY lambda/package.json ./package.json
+RUN npm install --omit=dev --no-audit --no-fund
+
+FROM node:24-bookworm-slim
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV STREAMING_PORT=3001
+# The image generators read fonts from `${IMGPREFIX}images`, relative to the working directory.
+ENV IMGPREFIX=lambda/
+
+COPY --from=runtimedeps /app/node_modules ./node_modules
+COPY --from=build /app/dist-selfhosted/lambda ./lambda
+COPY lambda/images ./lambda/images
+COPY llms ./llms
+COPY docs/content ./docs/content
+COPY programs/builtin ./programs/builtin
+
+USER node
+EXPOSE 3000 3001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
+CMD ["node", "lambda/server.js"]

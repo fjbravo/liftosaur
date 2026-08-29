@@ -2,7 +2,7 @@ import { APIGatewayProxyEventV2, Context } from "aws-lambda";
 import { LlmLiftoscript } from "./utils/llms/llmLiftoscript";
 import { IDI } from "./utils/di";
 import Rollbar from "rollbar";
-import { Utils_getEnv } from "./utils";
+import { Utils_getEnv, Utils_isSelfHosted } from "./utils";
 import { RollbarUtils_checkIgnore } from "../src/utils/rollbar";
 import { allowedHosts } from "./utils/response";
 import * as Cookie from "cookie";
@@ -192,22 +192,27 @@ const postAiConvertStreamHandler: RouteHandler<IPayload, void, typeof postAiConv
   }
 };
 
-const rollbar = new Rollbar({
-  accessToken: "bcdd086a019f49edb69f790a854b44dd",
-  captureUncaught: true,
-  captureUnhandledRejections: true,
-  payload: {
-    environment: `${Utils_getEnv()}-lambda-streaming`,
-    client: {
-      javascript: {
-        source_map_enabled: true,
-        code_version: process.env.FULL_COMMIT_HASH,
-        guess_uncaught_frames: true,
+const rollbarAccessToken =
+  process.env.ROLLBAR_SERVER_TOKEN || (Utils_isSelfHosted() ? undefined : "bcdd086a019f49edb69f790a854b44dd");
+
+const rollbar = rollbarAccessToken
+  ? new Rollbar({
+      accessToken: rollbarAccessToken,
+      captureUncaught: true,
+      captureUnhandledRejections: true,
+      payload: {
+        environment: `${Utils_getEnv()}-lambda-streaming`,
+        client: {
+          javascript: {
+            source_map_enabled: true,
+            code_version: process.env.FULL_COMMIT_HASH,
+            guess_uncaught_frames: true,
+          },
+        },
       },
-    },
-  },
-  checkIgnore: RollbarUtils_checkIgnore,
-});
+      checkIgnore: RollbarUtils_checkIgnore,
+    })
+  : undefined;
 
 export type IHandler = (event: APIGatewayProxyEventV2, responseStream: IStream, context: unknown) => Promise<void>;
 
@@ -260,7 +265,7 @@ export const getStreamingHandler = (diBuilder: () => IDI): IHandler => {
     try {
       resp = await r.route(method, url.pathname + url.search);
     } catch (e) {
-      rollbar.error(e as Error);
+      rollbar?.error(e as Error);
       di.log.log(e);
       const errorStatus = 500;
       di.log.log("<-------- Error ", method, path, errorStatus, `${Date.now() - time}ms`);

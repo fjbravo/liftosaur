@@ -51,6 +51,8 @@
     "start": "npm run build:theme && npm run build:markdown && npm run build:programs && npm run build:exercises && webpack-dev-server",
     "start:server": "npm run build:markdown && IS_DEV=true IS_LOCAL=true IMGPREFIX=lambda/ ts-node-dev --inspect --files --poll -r ./register-rn-web.js -T devserver.ts",
     "start:server:prod": "IS_DEV=false IS_LOCAL=false IMGPREFIX=lambda/ ts-node-dev --inspect --files --poll -r ./register-rn-web.js -T devserver.ts",
+    "start:selfhosted": "IMGPREFIX=lambda/ ts-node-dev -r ./register-rn-web.js -T selfhosted/server.ts",
+    "build:selfhosted": "npm run ensure:localdomain && npm run build:markdown && tsc -p tsconfig.lambda.json --noEmit && NODE_ENV=production webpack --config selfhosted/webpack.server.config.js",
     "trust": "sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain cert/private.crt",
     "start:https": "webpack-dev-server --https --cert cert/private.pem --key cert/private.key --port 8443",
     "migrate": "curl -v -X POST http://local-api.liftosaur.com:3000/api/migrate?key=$KEY",
