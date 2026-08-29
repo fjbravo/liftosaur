@@ -4,6 +4,16 @@
 * **[Features roadmap](https://github.com/astashov/liftosaur/discussions)**
 * **[Bugs](https://github.com/astashov/liftosaur/issues)**
 
+> **Self-hosting with Docker**: the whole app (frontend, API server, database, object
+> storage, mail catcher) can run on your own hardware with Docker Compose — see the
+> **[Docker deployment guide](docs/self-hosting/README.md)**. Prebuilt images are
+> published to GitHub Container Registry on every push to the default branch, so a
+> deployment can pull instead of building. Note that the public URL of the deployment
+> (`HOST`) is **baked into the images at build time** — the frontend bundle and
+> server-rendered pages resolve their API hosts from it — so changing the URL means
+> rebuilding the images (locally with `docker compose up -d --build`, or by updating
+> the `LIFTOSAUR_HOST` repository variable and re-running the GitHub Actions workflow).
+
 <img src="https://raw.github.com/astashov/liftosaur/master/screenshot2.png" alt="Liftosaur Screenshot" width="360" />
 
 It's mobile app, that's available as:
