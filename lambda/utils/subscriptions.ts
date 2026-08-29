@@ -1,5 +1,5 @@
 import fetch from "node-fetch";
-import { Utils_getEnv } from "../utils";
+import { Utils_getEnv, Utils_isSelfHosted } from "../utils";
 import { ILogUtil } from "./log";
 import JWT from "jsonwebtoken";
 import { ISecretsUtil } from "./secrets";
@@ -256,6 +256,10 @@ export class Subscriptions {
   }
 
   public async hasSubscription(di: IDI, userId: string, subscription: ISubscription): Promise<boolean> {
+    // Self-hosted instances have no store to buy a subscription from, so premium is unlocked for everyone.
+    if (Utils_isSelfHosted()) {
+      return true;
+    }
     if (subscription.apple) {
       for (const receipt of subscription.apple) {
         if (await this.verifyAppleReceipt(receipt.value)) {

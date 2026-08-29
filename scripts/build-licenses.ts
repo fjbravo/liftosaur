@@ -286,7 +286,8 @@ function podNames(): string[] {
 }
 
 function gradleCoordinates(npmDirs: Map<string, string>): string[] {
-  const files = [path.join(root, "android", "app", "build.gradle")];
+  const appGradle = path.join(root, "android", "app", "build.gradle");
+  const files = fs.existsSync(appGradle) ? [appGradle] : [];
   for (const dir of npmDirs.values()) {
     const gradle = path.join(dir, "android", "build.gradle");
     if (fs.existsSync(gradle)) {

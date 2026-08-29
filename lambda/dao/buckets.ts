@@ -1,4 +1,4 @@
-import { Utils_getEnv } from "../utils";
+import { Utils_getEnv, Utils_isSelfHosted } from "../utils";
 
 export const LftS3Buckets = {
   caches: "liftosaurcaches2",
@@ -14,6 +14,9 @@ export const LftS3Buckets = {
 };
 
 export function getUserImagesPrefix(): string {
+  if (Utils_isSelfHosted()) {
+    return `${(process.env.HOST || "").replace(/\/+$/, "")}/userimages/`;
+  }
   const env = Utils_getEnv();
   if (env === "dev") {
     return "https://stage.liftosaur.com/userimages/";

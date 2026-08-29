@@ -1,0 +1,59 @@
+# Keeps this fork up to date with the upstream project (astashov/liftosaur).
+#
+# Weekly (and on demand), fetches upstream master and, when it has new commits,
+# force-pushes it to the `upstream-sync` branch and opens a PR into master.
+# Merging that PR is the sync: a clean merge is one click, and conflicts with
+# the self-hosting changes surface in the PR instead of landing on master
+# unresolved. Merging also triggers the self-hosted image pipeline, so fresh
+# images are published automatically.
+#
+# Note: scheduled workflows only run from the default branch, so this activates
+# once it lands on master.
+
+name: Upstream sync
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/astashov/liftosaur.git
+          git fetch upstream master
+
+      - name: Count new upstream commits
+        id: check
+        run: |
+          count=$(git rev-list --count origin/master..upstream/master)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Upstream is $count commit(s) ahead of this fork's master."
+
+      - name: Push sync branch and open PR
+        if: steps.check.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git push --force origin upstream/master:refs/heads/upstream-sync
+          open_pr=$(gh pr list --head upstream-sync --base master --state open --json number --jq 'length')
+          if [ "$open_pr" = "0" ]; then
+            gh pr create --head upstream-sync --base master \
+              --title "Sync fork with upstream astashov/liftosaur" \
+              --body "Automated PR from the upstream-sync workflow: upstream master has ${{ steps.check.outputs.count }} new commit(s).
+
+          Merging this PR merges upstream into this fork's master, keeping the self-hosting changes on top, and triggers the self-hosted image pipeline. If GitHub reports conflicts, resolve them here (typically where upstream touched the same files as the self-hosting adapters) before merging."
+          else
+            echo "Sync PR already open - branch updated in place."
+          fi

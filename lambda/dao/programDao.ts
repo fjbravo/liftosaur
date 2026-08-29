@@ -43,7 +43,9 @@ export const programOrder = [
 ];
 
 function getCdnHost(): string {
-  return process.env.HOST || "https://www.liftosaur.com";
+  // Server-side fetch of static content: in a containerized deployment the public HOST may
+  // not be reachable from inside the network, so an internal origin takes precedence.
+  return process.env.LIFTOSAUR_INTERNAL_HOST || process.env.HOST || "https://www.liftosaur.com";
 }
 
 function buildProgram(entry: IProgramIndexEntry, detail: IProgramDetail): IProgram {

@@ -6,6 +6,10 @@ export function Utils_isLocal(): boolean {
   return process.env.IS_LOCAL === "true";
 }
 
+export function Utils_isSelfHosted(): boolean {
+  return process.env.LIFTOSAUR_SELF_HOSTED === "true";
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function log(...str: any[]): void {
   const time = new Date();

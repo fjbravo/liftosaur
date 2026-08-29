@@ -12,7 +12,7 @@ import { ApiKeyDao } from "./dao/apiKeyDao";
 import * as Cookie from "cookie";
 import JWT from "jsonwebtoken";
 import { UidFactory_generateUid } from "./utils/generator";
-import { Utils_getEnv, Utils_isLocal } from "./utils";
+import { Utils_getEnv, Utils_isLocal, Utils_isSelfHosted } from "./utils";
 import { ApplePromotionalOfferSigner } from "./utils/applePromotionalOfferSigner";
 import rsaPemFromModExp from "rsa-pem-from-mod-exp";
 import { IPartialStorage, IStorage } from "../src/types";
@@ -43,6 +43,7 @@ import {
   ResponseUtils_getReferer,
   ResponseUtils_getHost,
   ResponseUtils_clearSessionCookie,
+  ResponseUtils_sessionCookieDomain,
 } from "./utils/response";
 import { ImageCacher_cache } from "./utils/imageCacher";
 import { ConsentMode_fromCountry } from "./utils/consentMode";
@@ -673,7 +674,7 @@ const postSyncHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof post
     const session = JWT.sign({ userId: userId }, cookieSecret);
     setCookie = Cookie.serialize("session", session, {
       httpOnly: true,
-      domain: ".liftosaur.com",
+      domain: ResponseUtils_sessionCookieDomain(),
       path: "/",
       expires: new Date(new Date().getFullYear() + 10, 0, 1),
     });
@@ -910,7 +911,7 @@ const postDebugSessionHandler: RouteHandler<IPayload, APIGatewayProxyResult, typ
   const session = JWT.sign({ userId: debugId }, await di.secrets.getCookieSecret());
   const setCookie = Cookie.serialize("session", session, {
     httpOnly: true,
-    domain: ".liftosaur.com",
+    domain: ResponseUtils_sessionCookieDomain(),
     path: "/",
     expires: new Date(new Date().getFullYear() + 10, 0, 1),
   });
@@ -1030,7 +1031,7 @@ async function signInResponse(
       ...ResponseUtils_getHeaders(event),
       "set-cookie": Cookie.serialize("session", session, {
         httpOnly: true,
-        domain: ".liftosaur.com",
+        domain: ResponseUtils_sessionCookieDomain(),
         path: "/",
         expires: new Date(new Date().getFullYear() + 10, 0, 1),
       }),
@@ -3001,7 +3002,7 @@ const getProgramRevisionsHandler: RouteHandler<
       `ua=${getUserAgent(event)}`,
       `xclient=${event.headers["x-client"] || event.headers["X-Client"] || ""}`
     );
-    rollbar.error("Program revisions - not authorized", {
+    rollbar?.error("Program revisions - not authorized", {
       programid: params.programid,
       cookienames: Object.keys(cookies).join(","),
       hasauthheader: !!(event.headers.Authorization || event.headers.authorization),
@@ -3587,50 +3588,57 @@ async function showRepMax(payload: IPayload, reps?: number): Promise<APIGatewayP
   };
 }
 
-const rollbar = new Rollbar({
-  accessToken: "bcdd086a019f49edb69f790a854b44dd",
-  captureUncaught: true,
-  captureUnhandledRejections: true,
-  payload: {
-    environment: `${Utils_getEnv()}-lambda`,
-    client: {
-      javascript: {
-        source_map_enabled: true,
-        code_version: process.env.FULL_COMMIT_HASH,
-        guess_uncaught_frames: true,
+const rollbarAccessToken =
+  process.env.ROLLBAR_SERVER_TOKEN || (Utils_isSelfHosted() ? undefined : "bcdd086a019f49edb69f790a854b44dd");
+
+const rollbar = rollbarAccessToken
+  ? new Rollbar({
+      accessToken: rollbarAccessToken,
+      captureUncaught: true,
+      captureUnhandledRejections: true,
+      payload: {
+        environment: `${Utils_getEnv()}-lambda`,
+        client: {
+          javascript: {
+            source_map_enabled: true,
+            code_version: process.env.FULL_COMMIT_HASH,
+            guess_uncaught_frames: true,
+          },
+        },
       },
-    },
-  },
-  checkIgnore: RollbarUtils_checkIgnore,
-});
+      checkIgnore: RollbarUtils_checkIgnore,
+    })
+  : undefined;
+
+function withRollbar(
+  handler: (event: {}) => Promise<APIGatewayProxyResult>
+): Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown> {
+  return (rollbar ? rollbar.lambdaHandler(handler) : handler) as Rollbar.LambdaHandler<
+    unknown,
+    APIGatewayProxyResult,
+    unknown
+  >;
+}
 
 export const getLftStatsLambdaDev = (
   diBuilder: () => IDI
 ): Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown> =>
-  rollbar.lambdaHandler(
-    async (event: {}): Promise<APIGatewayProxyResult> => statsLambdaHandler(diBuilder)(event)
-  ) as Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown>;
+  withRollbar(async (event: {}): Promise<APIGatewayProxyResult> => statsLambdaHandler(diBuilder)(event));
 
 export const getLftStatsLambda = (
   diBuilder: () => IDI
 ): Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown> =>
-  rollbar.lambdaHandler(
-    async (event: {}): Promise<APIGatewayProxyResult> => statsLambdaHandler(diBuilder)(event)
-  ) as Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown>;
+  withRollbar(async (event: {}): Promise<APIGatewayProxyResult> => statsLambdaHandler(diBuilder)(event));
 
 export const getLftReconcilePaymentsLambdaDev = (
   diBuilder: () => IDI
 ): Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown> =>
-  rollbar.lambdaHandler(
-    async (event: {}): Promise<APIGatewayProxyResult> => reconcilePaymentsLambdaHandler(diBuilder)(event)
-  ) as Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown>;
+  withRollbar(async (event: {}): Promise<APIGatewayProxyResult> => reconcilePaymentsLambdaHandler(diBuilder)(event));
 
 export const getLftReconcilePaymentsLambda = (
   diBuilder: () => IDI
 ): Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown> =>
-  rollbar.lambdaHandler(
-    async (event: {}): Promise<APIGatewayProxyResult> => reconcilePaymentsLambdaHandler(diBuilder)(event)
-  ) as Rollbar.LambdaHandler<unknown, APIGatewayProxyResult, unknown>;
+  withRollbar(async (event: {}): Promise<APIGatewayProxyResult> => reconcilePaymentsLambdaHandler(diBuilder)(event));
 
 export const reconcilePaymentsLambdaHandler = (
   diBuilder: () => IDI
@@ -3797,7 +3805,7 @@ function getIsNewUser(item: IStatsUserData): boolean {
 export type IHandler = (event: APIGatewayProxyEvent, context: unknown) => Promise<APIGatewayProxyResult>;
 type IRollbarHandler = Rollbar.LambdaHandler<APIGatewayProxyEvent, APIGatewayProxyResult, unknown>;
 export const getHandler = (diBuilder: () => IDI): IRollbarHandler => {
-  return rollbar.lambdaHandler(getRawHandler(diBuilder));
+  return rollbar ? rollbar.lambdaHandler(getRawHandler(diBuilder)) : getRawHandler(diBuilder);
 };
 
 export const getRawHandler = (diBuilder: () => IDI): IHandler => {
@@ -3825,7 +3833,9 @@ export const getRawHandler = (diBuilder: () => IDI): IHandler => {
       // @ts-ignore
       rollbar.client.telemeter.queue = [];
     }
-    di.log.setRollbar(rollbar);
+    if (rollbar) {
+      di.log.setRollbar(rollbar);
+    }
     if (userid) {
       di.log.setUser(userid);
     } else {
@@ -3990,7 +4000,7 @@ export const getRawHandler = (diBuilder: () => IDI): IHandler => {
       errorStatus = 500;
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        rollbar.error(e as any, undefined, { person: { id: userid } });
+        rollbar?.error(e as any, undefined, { person: { id: userid } });
       } catch (_e) {}
       resp = { success: false, error: "Internal Server Error" };
     }

@@ -110,10 +110,16 @@ module.exports = {
       __COMMIT_HASH__: JSON.stringify(commitHash),
       __FULL_COMMIT_HASH__: JSON.stringify(fullCommitHash),
       __ENV__: JSON.stringify("production"),
-      __HOST__: JSON.stringify(isStage ? "https://stage.liftosaur.com" : "https://www.liftosaur.com"),
-      __API_HOST__: JSON.stringify(isStage ? "https://api3-dev.liftosaur.com" : "https://api3.liftosaur.com"),
+      __SELF_HOSTED__: JSON.stringify(process.env.LIFTOSAUR_SELF_HOSTED === "true"),
+      __HOST__: JSON.stringify(
+        process.env.LIFTOSAUR_HOST || (isStage ? "https://stage.liftosaur.com" : "https://www.liftosaur.com")
+      ),
+      __API_HOST__: JSON.stringify(
+        process.env.LIFTOSAUR_API_HOST || (isStage ? "https://api3-dev.liftosaur.com" : "https://api3.liftosaur.com")
+      ),
       __STREAMING_API_HOST__: JSON.stringify(
-        isStage ? "https://streaming-api-dev.liftosaur.com" : "https://streaming-api.liftosaur.com"
+        process.env.LIFTOSAUR_STREAMING_API_HOST ||
+          (isStage ? "https://streaming-api-dev.liftosaur.com" : "https://streaming-api.liftosaur.com")
       ),
     }),
   ],

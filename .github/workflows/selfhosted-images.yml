@@ -1,0 +1,70 @@
+# Builds the self-hosted container images and publishes them to GitHub Container
+# Registry, so a deployment can pull prebuilt images instead of building locally
+# (see docs/self-hosting/README.md, "Pulling prebuilt images").
+#
+# The public URL is baked into the images at build time. It defaults to the
+# homelab deployment URL and can be overridden with the repository variable
+# LIFTOSAUR_HOST (Settings -> Secrets and variables -> Actions -> Variables).
+# Either way it must match the HOST value in the deployment's .env.
+
+name: Self-hosted images
+
+on:
+  push:
+    branches:
+      - master
+      - main
+      # Pre-merge validation of this pipeline; remove once the branch is merged.
+      - claude/containerized-self-hosted-odpt5m
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: server
+            dockerfile: selfhosted/docker/Dockerfile.server
+          - image: web
+            dockerfile: selfhosted/docker/Dockerfile.web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-${{ matrix.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=sha
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            LIFTOSAUR_HOST=${{ vars.LIFTOSAUR_HOST || 'https://liftosaur.bylab.io' }}
+            LIFTOSAUR_API_HOST=${{ vars.LIFTOSAUR_HOST || 'https://liftosaur.bylab.io' }}
+            LIFTOSAUR_STREAMING_API_HOST=${{ vars.LIFTOSAUR_HOST || 'https://liftosaur.bylab.io' }}
+            LIFTOSAUR_SELF_HOSTED=true
+            COMMIT_HASH=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=min

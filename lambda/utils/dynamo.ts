@@ -1,4 +1,4 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, DynamoDBClientConfig } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   QueryCommand,
@@ -82,7 +82,7 @@ export class DynamoUtil implements IDynamoUtil {
 
   private get dynamo(): DynamoDBDocumentClient {
     if (this._dynamo == null) {
-      this._dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+      this._dynamo = DynamoDBDocumentClient.from(new DynamoDBClient(DynamoUtil_clientConfig()), {
         marshallOptions: { removeUndefinedValues: true },
       });
     }
@@ -576,6 +576,14 @@ export class DynamoUtil implements IDynamoUtil {
       BATCH_WRITE_CONCURRENCY
     );
   }
+}
+
+function DynamoUtil_clientConfig(): DynamoDBClientConfig {
+  const endpoint = process.env.DYNAMODB_ENDPOINT;
+  if (!endpoint) {
+    return {};
+  }
+  return { endpoint, region: process.env.AWS_REGION || "us-west-2" };
 }
 
 const BATCH_MAX_ATTEMPTS = 8;
