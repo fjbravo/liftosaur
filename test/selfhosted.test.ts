@@ -16,6 +16,11 @@ import { ResponseUtils_sessionCookieDomain } from "../lambda/utils/response";
 import { getUserImagesPrefix } from "../lambda/dao/buckets";
 import { Subscriptions } from "../lambda/utils/subscriptions";
 import { ISubscription } from "../src/types";
+import { Llm_buildProvider } from "../lambda/utils/llms/llmProviderFactory";
+import { ClaudeProvider } from "../lambda/utils/llms/claude";
+import { OpenAIProvider } from "../lambda/utils/llms/openai";
+import * as http from "http";
+import { AddressInfo } from "net";
 
 const managedEnvVars = [
   "LIFTOSAUR_SELF_HOSTED",
@@ -36,6 +41,9 @@ const managedEnvVars = [
   "S3_ENDPOINT",
   "S3_PUBLIC_ENDPOINT",
   "AWS_REGION",
+  "LLM_BASE_URL",
+  "LLM_MODEL",
+  "LLM_API_KEY",
 ];
 
 // The whole suite shares one process, so every var this file touches is snapshotted and restored.
@@ -247,6 +255,67 @@ describe("self-hosted gates", () => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const regular = require(modulePath);
       expect(regular.Subscriptions_hasSubscription({ apple: [], google: [] })).to.equal(false);
+    });
+  });
+
+  describe("Llm_buildProvider", () => {
+    it("uses the Anthropic provider by default", () => {
+      const provider = Llm_buildProvider("anthropic-key");
+      expect(provider).to.be.instanceOf(ClaudeProvider);
+    });
+
+    it("uses the OpenAI-compatible provider when LLM_BASE_URL is set", () => {
+      process.env.LLM_BASE_URL = "http://gateway.local:20128/v1";
+      process.env.LLM_MODEL = "cc/claude-sonnet-5";
+      const provider = Llm_buildProvider("anthropic-key");
+      expect(provider).to.be.instanceOf(OpenAIProvider);
+    });
+
+    it("streams through a plain-HTTP gateway with the configured model and key", async () => {
+      const requests: { path: string; auth: string; model: string }[] = [];
+      const gateway = http.createServer((req, res) => {
+        let body = "";
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => {
+          requests.push({
+            path: req.url || "",
+            auth: req.headers.authorization || "",
+            model: JSON.parse(body).model,
+          });
+          res.writeHead(200, { "Content-Type": "text/event-stream" });
+          res.write('data: {"choices":[{"delta":{"content":"Bench"}}]}\n');
+          res.write('data: {"choices":[{"delta":{"content":" Press"}}]}\n');
+          res.write("data: [DONE]\n");
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+      const port = (gateway.address() as AddressInfo).port;
+
+      try {
+        process.env.LLM_BASE_URL = `http://127.0.0.1:${port}/v1`;
+        process.env.LLM_MODEL = "cc/claude-sonnet-5";
+        process.env.LLM_API_KEY = "gateway-key";
+        const provider = Llm_buildProvider("anthropic-key");
+
+        let finish = "";
+        for await (const event of provider.generate("system", "user input")) {
+          if (event.type === "finish") {
+            finish = event.data;
+          }
+          if (event.type === "error") {
+            throw new Error(event.data);
+          }
+        }
+
+        expect(finish).to.equal("Bench Press");
+        expect(requests).to.have.length(1);
+        expect(requests[0].path).to.equal("/v1/chat/completions");
+        expect(requests[0].auth).to.equal("Bearer gateway-key");
+        expect(requests[0].model).to.equal("cc/claude-sonnet-5");
+      } finally {
+        await new Promise<void>((resolve) => gateway.close(() => resolve()));
+      }
     });
   });
 });

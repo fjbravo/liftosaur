@@ -2,10 +2,26 @@ import { ILLMProvider } from "./llmTypes";
 import { HttpStreaming_streamRequest } from "./httpStreaming";
 
 export class OpenAIProvider implements ILLMProvider {
+  // baseUrl points the OpenAI-compatible protocol at another gateway (e.g. a
+  // self-hosted LLM router); "/chat/completions" is appended to its path.
   constructor(
     private readonly apiKey: string,
-    private readonly model: string = "gpt-5-mini-2025-08-07"
+    private readonly model: string = "gpt-5-mini-2025-08-07",
+    private readonly baseUrl?: string
   ) {}
+
+  private endpoint(): { hostname: string; path: string; port?: number; protocol?: "http:" | "https:" } {
+    if (this.baseUrl == null) {
+      return { hostname: "api.openai.com", path: "/v1/chat/completions" };
+    }
+    const url = new URL(this.baseUrl);
+    return {
+      hostname: url.hostname,
+      port: url.port ? Number(url.port) : undefined,
+      protocol: url.protocol === "http:" ? "http:" : "https:",
+      path: `${url.pathname.replace(/\/+$/, "")}/chat/completions`,
+    };
+  }
 
   public async *generate(
     systemPrompt: string,
@@ -33,8 +49,7 @@ export class OpenAIProvider implements ILLMProvider {
       let fullContent = "";
 
       const stream = HttpStreaming_streamRequest({
-        hostname: "api.openai.com",
-        path: "/v1/chat/completions",
+        ...this.endpoint(),
         method: "POST",
         headers: {
           "Content-Type": "application/json",

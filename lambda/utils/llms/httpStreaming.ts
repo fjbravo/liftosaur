@@ -1,4 +1,5 @@
 import * as https from "https";
+import * as http from "http";
 import { IncomingMessage } from "http";
 
 export interface IStreamingRequest {
@@ -7,6 +8,8 @@ export interface IStreamingRequest {
   method: string;
   headers: Record<string, string>;
   body: string;
+  port?: number;
+  protocol?: "http:" | "https:";
 }
 
 export async function* HttpStreaming_streamRequest(request: IStreamingRequest): AsyncGenerator<string, void, unknown> {
@@ -39,9 +42,11 @@ export async function* HttpStreaming_streamRequest(request: IStreamingRequest): 
 
 export function HttpStreaming_makeRequest(request: IStreamingRequest): Promise<IncomingMessage> {
   return new Promise((resolve, reject) => {
-    const req = https.request(
+    const transport = request.protocol === "http:" ? http : https;
+    const req = transport.request(
       {
         hostname: request.hostname,
+        port: request.port,
         path: request.path,
         method: request.method,
         headers: {

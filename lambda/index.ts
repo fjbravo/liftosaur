@@ -205,7 +205,7 @@ import {
 import { AiLogsDao } from "./dao/aiLogsDao";
 import { ICollectionVersions } from "../src/models/versionTracker";
 import { ObjectUtils_values, ObjectUtils_keys } from "../src/utils/object";
-import { ClaudeProvider } from "./utils/llms/claude";
+import { Llm_buildProvider } from "./utils/llms/llmProviderFactory";
 import { MuscleGenerator } from "./utils/muscleGenerator";
 import { LlmMuscles } from "./utils/llms/llmMuscles";
 import { AiMuscleCacheDao } from "./dao/aiMuscleCacheDao";
@@ -3148,7 +3148,7 @@ const getMusclesForExerciseHandler: RouteHandler<
   } else {
     di.log.log("Missed cached response for muscles for exercise:", exerciseName);
     const anthropicKey = await di.secrets.getAnthropicKey();
-    const llmProvider = new ClaudeProvider(anthropicKey);
+    const llmProvider = Llm_buildProvider(anthropicKey);
     const llmMuscles = new LlmMuscles(di, llmProvider, userId);
     const muscleGenerator = new MuscleGenerator(di, llmMuscles);
     const musclesResponse = await muscleGenerator.generateMuscles(match.params.exercise);

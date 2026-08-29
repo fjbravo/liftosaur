@@ -10,7 +10,7 @@ import { ILimitedUserDao, UserDao } from "./dao/userDao";
 import { Endpoint, Method, RouteHandler, Router } from "yatro";
 import { UrlUtils_build } from "../src/utils/url";
 import { IEither } from "../src/utils/types";
-import { ClaudeProvider } from "./utils/llms/claude";
+import { Llm_buildProvider } from "./utils/llms/llmProviderFactory";
 import { IAccount, Account_getFromStorage } from "../src/models/account";
 import { Subscriptions } from "./utils/subscriptions";
 import { UrlContentFetcher } from "./utils/urlContentFetcher";
@@ -145,8 +145,8 @@ const postAiConvertStreamHandler: RouteHandler<IPayload, void, typeof postAiConv
   );
 
   const anthropicKey = await di.secrets.getAnthropicKey();
-  di.log.log("Using Claude provider for LLM");
-  const provider = new ClaudeProvider(anthropicKey);
+  const provider = Llm_buildProvider(anthropicKey);
+  di.log.log(`Using ${provider.constructor.name} for LLM`);
 
   try {
     // Handle URL fetching if needed

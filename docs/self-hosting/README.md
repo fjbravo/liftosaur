@@ -116,7 +116,7 @@ GitHub Actions status checks.
 
 | Needs extra setup | What to do |
 |---|---|
-| AI program generation | Set `ANTHROPIC_API_KEY` (and optionally `OPENAI_API_KEY`) in `.env` and restart. |
+| AI program generation | Set `ANTHROPIC_API_KEY` (and optionally `OPENAI_API_KEY`) in `.env` and restart. Or route through an OpenAI-compatible gateway you already run (9router, LiteLLM, …): set `LLM_BASE_URL` to its `/v1` base, `LLM_MODEL` to the model/alias it serves, and `LLM_API_KEY` (or reuse `ANTHROPIC_API_KEY`) to its key. |
 | Real email delivery | Point `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`SMTP_FROM` at your relay and remove the `mailpit` service. |
 | "Sign in with Google/Apple" buttons | The server verifies tokens against Google's and Apple's public endpoints, but the buttons need OAuth client IDs registered for *your* domain and compiled into the web bundle. Email/password works without this. |
 | Error reporting | Set `ROLLBAR_SERVER_TOKEN` to your own Rollbar project. Off by default — nothing is reported anywhere. |
