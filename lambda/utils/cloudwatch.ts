@@ -6,7 +6,7 @@ import {
 import { DateUtils_formatYYYYMMDD, DateUtils_formatHHMMSS } from "../../src/utils/date";
 import { ILogUtil } from "./log";
 import fs from "fs";
-import { Utils_getEnv } from "../utils";
+import { Utils_getEnv, Utils_isSelfHosted } from "../utils";
 
 export interface ICloudwatchUtil {
   getLogs(date: Date, userid?: string, endpoint?: string): Promise<void>;
@@ -25,6 +25,10 @@ export class CloudwatchUtil implements ICloudwatchUtil {
   }
 
   public async getLogs(date: Date, userid?: string, endpoint?: string): Promise<void> {
+    if (Utils_isSelfHosted()) {
+      this.log.log("Fetching logs is not supported in self-hosted mode - read the container's stdout logs instead");
+      return;
+    }
     this.log.log(
       ...[
         "Fetching logs for",

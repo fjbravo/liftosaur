@@ -1,5 +1,6 @@
 import {
   S3Client,
+  S3ClientConfig,
   ListObjectsCommand,
   ListObjectsCommandOutput,
   GetObjectCommand,
@@ -35,14 +36,29 @@ export interface IS3Util {
 
 export class S3Util implements IS3Util {
   private _s3?: S3Client;
+  private _presignerS3?: S3Client;
 
   constructor(public readonly log: ILogUtil) {}
 
   private get s3(): S3Client {
     if (this._s3 == null) {
-      this._s3 = new S3Client({});
+      this._s3 = new S3Client(S3Util_clientConfig(process.env.S3_ENDPOINT));
     }
     return this._s3;
+  }
+
+  // Presigned URLs are handed to browsers, which can't resolve a container-internal S3 host, so
+  // they're signed against the externally reachable endpoint while server-side calls keep using
+  // the internal one. The signature covers the host, so this has to be a separate client.
+  private get presignerS3(): S3Client {
+    const publicEndpoint = process.env.S3_PUBLIC_ENDPOINT;
+    if (!publicEndpoint) {
+      return this.s3;
+    }
+    if (this._presignerS3 == null) {
+      this._presignerS3 = new S3Client(S3Util_clientConfig(publicEndpoint));
+    }
+    return this._presignerS3;
   }
 
   public async listObjects(args: { bucket: string; prefix: string }): Promise<string[]> {
@@ -125,7 +141,7 @@ export class S3Util implements IS3Util {
       Key: args.key,
       ContentType: args.contentType,
     });
-    const uploadUrl = await getSignedUrl(this.s3, command, { expiresIn: args.expiresIn || 300 });
+    const uploadUrl = await getSignedUrl(this.presignerS3, command, { expiresIn: args.expiresIn || 300 });
     this.log.log(
       "S3 presigned URL generated:",
       `${args.bucket}/${args.key}`,
@@ -141,8 +157,16 @@ export class S3Util implements IS3Util {
       Bucket: args.bucket,
       Key: args.key,
     });
-    const downloadUrl = await getSignedUrl(this.s3, command, { expiresIn: args.expiresIn || 300 });
+    const downloadUrl = await getSignedUrl(this.presignerS3, command, { expiresIn: args.expiresIn || 300 });
     this.log.log("S3 presigned download URL generated:", `${args.bucket}/${args.key}`, `- ${Date.now() - startTime}ms`);
     return downloadUrl;
   }
+}
+
+// forcePathStyle is required for S3-compatible servers (e.g. MinIO) that don't do vhost-style buckets.
+function S3Util_clientConfig(endpoint?: string): S3ClientConfig {
+  if (!endpoint) {
+    return {};
+  }
+  return { endpoint, forcePathStyle: true, region: process.env.AWS_REGION || "us-west-2" };
 }

@@ -1,5 +1,6 @@
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { ILogUtil } from "./log";
+import { Utils_isSelfHosted } from "../utils";
 
 export interface ILambdaUtil {
   invoke<T>(args: { name: string; invocationType: "RequestResponse" | "Event"; payload: T }): Promise<void>;
@@ -22,6 +23,10 @@ export class LambdaUtil implements ILambdaUtil {
     invocationType: "RequestResponse" | "Event";
     payload: T;
   }): Promise<void> {
+    if (Utils_isSelfHosted()) {
+      this.log.log(`Skipping lambda invocation '${args.name}' - there are no AWS Lambdas in self-hosted mode`);
+      return;
+    }
     const startTime = Date.now();
     try {
       const result = await this.lambda.send(
