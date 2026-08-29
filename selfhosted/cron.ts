@@ -1,9 +1,10 @@
 import fetch from "node-fetch";
-import { buildDi, IDI } from "../lambda/utils/di";
+import { IDI } from "../lambda/utils/di";
 import { LogUtil } from "../lambda/utils/log";
 import { statsLambdaHandler, reconcilePaymentsLambdaHandler } from "../lambda/index";
+import { buildSelfHostedDi } from "./di";
 
-const diBuilder = (): IDI => buildDi(new LogUtil(), fetch);
+const diBuilder = (): IDI => buildSelfHostedDi(new LogUtil(), fetch);
 
 interface IJob {
   name: string;

@@ -56,10 +56,10 @@ One-time setup:
 
 1. **Set the build-time URL.** The public URL is baked into the images, so create a
    repository *variable* named `LIFTOSAUR_HOST` (GitHub → Settings → Secrets and
-   variables → Actions → Variables) with the same value as `HOST` in your `.env`
-   (e.g. `https://lift.example.com`). Without it, images are built for
-   `http://localhost`. Changing the variable requires a re-run of the workflow
-   (it has a manual `workflow_dispatch` trigger).
+   variables → Actions → Variables) with the same value as `HOST` in your `.env`.
+   Without it, images are built for the default `https://liftosaur.bylab.io`.
+   Changing the variable requires a re-run of the workflow (it has a manual
+   `workflow_dispatch` trigger).
 2. **Make the images pullable.** Either make both GHCR packages public (GitHub →
    Packages → package → Package settings → Change visibility), or on the deployment
    host run `docker login ghcr.io` with a token that has `read:packages`.

@@ -1,16 +1,14 @@
 import "source-map-support/register";
 import { S3Event } from "aws-lambda";
 import sharp from "sharp";
-import { buildDi } from "./utils/di";
+import { buildDi, IDI } from "./utils/di";
 import { LogUtil } from "./utils/log";
 import fetch from "node-fetch";
 
 const MAX_WIDTH = 600;
 const MAX_HEIGHT = 900;
 
-export const handler = async (event: S3Event): Promise<void> => {
-  const di = buildDi(new LogUtil(), fetch);
-
+async function resizeImages(di: IDI, event: S3Event): Promise<void> {
   for (const record of event.Records) {
     const bucket = record.s3.bucket.name;
     const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, " "));
@@ -100,4 +98,11 @@ export const handler = async (event: S3Event): Promise<void> => {
       di.log.log(`Error resizing ${key}:`, error);
     }
   }
-};
+}
+
+export const getImageResizerHandler =
+  (diBuilder: () => IDI) =>
+  (event: S3Event): Promise<void> =>
+    resizeImages(diBuilder(), event);
+
+export const handler = (event: S3Event): Promise<void> => resizeImages(buildDi(new LogUtil(), fetch), event);

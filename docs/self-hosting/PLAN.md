@@ -112,25 +112,36 @@ changes below.
 
 ## Work packages
 
-### WP1 — Backend service adapters (env-gated) ✅ done
+### WP1 — Backend service adapters ✅ done
 
-All inert unless the env var is set; AWS path unchanged otherwise.
+Every self-hosted implementation lives in `selfhosted/` and is assembled by
+`buildSelfHostedDi()` (`selfhosted/di.ts`), which the self-hosted entrypoints
+(`selfhosted/server.ts`, `selfhosted/cron.ts`) use in place of `buildDi()`.
+`lambda/utils/di.ts` and `buildDi()` stay on the pure-AWS path — `lambda/run.ts`
+and `devserver.ts` are unaffected.
 
-- [x] `lambda/utils/dynamo.ts` — honors `DYNAMODB_ENDPOINT`.
-- [x] `lambda/utils/s3.ts` — honors `S3_ENDPOINT` (+`forcePathStyle`); uses
-      `S3_PUBLIC_ENDPOINT` for presigned-URL generation so browser-facing URLs
-      are host-reachable.
-- [x] `lambda/utils/secrets.ts` — `EnvSecretsUtil` selected in `buildDi` when
-      `LIFTOSAUR_SELF_HOSTED=true` (or `SECRETS_SOURCE=env`):
-      `LIFTOSAUR_COOKIE_SECRET`, `LIFTOSAUR_CRYPTO_KEY`, `LIFTOSAUR_API_KEY`
-      required (clear error naming the variable); `OPENAI_API_KEY`,
-      `ANTHROPIC_API_KEY`, Apple/Google/webpushr/updates vars optional
-      (empty when unset).
-- [x] `lambda/utils/ses.ts` — SMTP via nodemailer when `SMTP_HOST` is set
-      (`SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`; auth omitted unless
-      both user and pass are set, so mailpit works).
-- [x] `lambda/utils/lambda.ts` — warn + no-op in self-hosted mode (dead code).
-- [x] `lambda/utils/cloudwatch.ts` — "not supported in self-hosted mode" no-op.
+- [x] `selfhosted/envSecrets.ts` — `EnvSecretsUtil`, always used on the
+      self-hosted DI path (it *is* the self-hosted path, so there is no
+      `SECRETS_SOURCE` switch): `LIFTOSAUR_COOKIE_SECRET`,
+      `LIFTOSAUR_CRYPTO_KEY`, `LIFTOSAUR_API_KEY` required (clear error naming
+      the variable); `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+      Apple/Google/webpushr/updates vars optional (empty when unset).
+- [x] `selfhosted/smtpSes.ts` — `SmtpSesUtil` (nodemailer), chosen by
+      `buildSelfHostedDi` when `SMTP_HOST` is set (`SMTP_PORT`, `SMTP_USER`,
+      `SMTP_PASS`, `SMTP_FROM`; auth omitted unless both user and pass are set,
+      so mailpit works); plain `SesUtil` otherwise.
+- [x] `selfhosted/di.ts` — reads `DYNAMODB_ENDPOINT`, `S3_ENDPOINT` (+
+      `forcePathStyle`) and `S3_PUBLIC_ENDPOINT` (presigned URLs are signed
+      against the browser-reachable host) and passes them as client configs;
+      `SelfHostedLambdaUtil` / `SelfHostedCloudwatchUtil` log-and-no-op instead
+      of calling AWS Lambda / CloudWatch.
+- [x] `lambda/utils/dynamo.ts` / `lambda/utils/s3.ts` — the only upstream
+      residue: an optional `clientConfig` (and `presignerClientConfig` for S3)
+      constructor parameter defaulting to `{}`, i.e. generic dependency
+      injection with no self-hosting knowledge in the file.
+- [x] `test/selfhosted.test.ts` — pins all of the above plus the in-place gates
+      below, so a bad upstream-merge resolution fails CI instead of silently
+      reverting self-hosted behavior.
 
 ### WP2 — Containerized server ✅ done
 
@@ -208,8 +219,9 @@ All inert unless the env var is set; AWS path unchanged otherwise.
 - [x] `docker compose config` parses; nginx config passes `nginx -t`, and the two
       presigned-URL locations were exercised against a stub upstream (path, query
       and `Host` forwarded verbatim).
-- [x] Unit tests (`npm test`): 1565 passing; the only 4 failures reproduce
-      identically on untouched `master` (pre-existing `__dirname` ESM issue in
+- [x] Unit tests (`npm test`): 1585 passing (1565 upstream + 20 in
+      `test/selfhosted.test.ts`); the only 4 failures reproduce identically on
+      untouched `master` (pre-existing `__dirname` ESM issue in
       `test/updates/signingCertificate.test.ts`).
 - [x] Compose stack boots end-to-end: bootstrap created all 23 tables and 10
       buckets and registered the resizer webhook; every service healthy;
@@ -261,6 +273,42 @@ All inert unless the env var is set; AWS path unchanged otherwise.
 | `MAILPIT_UI_PORT` | no | Host port for mailpit's web UI, default `8025`. Compose-only. |
 | `MINIO_NOTIFY_WEBHOOK_ENABLE_RESIZER` | no | Set to `true` on the `bootstrap` job to bind the `liftosauruserimages` bucket to MinIO's `RESIZER` webhook target (compose sets it). |
 | Apple/Google IAP vars | no | Only for App Store / Play Store IAP verification — not meaningful for typical self-hosting. |
+
+## Upstream conflict map
+
+This fork merges upstream `astashov/liftosaur` regularly. Everything that can
+live in `selfhosted/` does (`di.ts`, `envSecrets.ts`, `smtpSes.ts`, `server.ts`,
+`cron.ts`, `bootstrap/`, `docker/`, `webpack.server.config.js`) plus
+`docker-compose*.yml`, `env.example` and `docs/self-hosting/` — new files never
+conflict. What follows is the complete list of *upstream-owned* files the fork
+still modifies (derive it mechanically with
+`git diff --diff-filter=M --stat <last-merged-upstream-sha>..HEAD`), and how to
+resolve a conflict in each. `test/selfhosted.test.ts` pins the behavior of every
+in-place gate, so a wrong resolution fails CI rather than silently reverting.
+
+| File | What the fork changes | How to resolve a conflict |
+|---|---|---|
+| `lambda/utils.ts` | Adds `Utils_isSelfHosted()` (reads `LIFTOSAUR_SELF_HOSTED`). | Keep both: upstream's file + the added function. |
+| `lambda/utils/dynamo.ts` | `DynamoUtil` takes an optional `clientConfig: DynamoDBClientConfig = {}` used by the lazy client getter. | Keep both: re-apply the constructor parameter and `new DynamoDBClient(this.clientConfig)` onto upstream's class. |
+| `lambda/utils/s3.ts` | `S3Util` takes optional `clientConfig` / `presignerClientConfig`; presigned URLs are signed with `this.presignerS3`. | Keep both: re-apply the constructor parameters, the `presignerS3` getter, and the two `getSignedUrl(this.presignerS3, ...)` call sites. |
+| `lambda/utils/response.ts` | Adds `ResponseUtils_sessionCookieDomain()` and uses it in `ResponseUtils_clearSessionCookie`. | Keep both: upstream's code + the helper; every `domain: ".liftosaur.com"` upstream adds must become the helper call. |
+| `lambda/utils/subscriptions.ts` | `Subscriptions.hasSubscription` returns `true` early in self-hosted mode. | Keep both: upstream's verification logic with the 3-line short-circuit re-inserted at the top of the method. |
+| `lambda/dao/buckets.ts` | `getUserImagesPrefix()` returns `${HOST}/userimages/` in self-hosted mode. | Keep both: upstream's env branches + the self-hosted branch first. |
+| `lambda/dao/programDao.ts` | `getCdnHost()` prefers `LIFTOSAUR_INTERNAL_HOST`. | Keep both: prepend `process.env.LIFTOSAUR_INTERNAL_HOST ||` to upstream's expression. |
+| `lambda/utils/programImageGenerator.ts` | Same `LIFTOSAUR_INTERNAL_HOST` precedence for `cdnHost`. | Keep both: prepend `process.env.LIFTOSAUR_INTERNAL_HOST ||`. |
+| `lambda/index.ts` | Rollbar is optional (`ROLLBAR_SERVER_TOKEN`, no client at all in self-hosted mode) via `withRollbar()` + `rollbar?.`; session cookies use `ResponseUtils_sessionCookieDomain()`. | Keep both. New upstream `rollbar.` call sites become `rollbar?.`; new `rollbar.lambdaHandler(...)` wrappers become `withRollbar(...)`; new session cookies use the domain helper. |
+| `lambda/streamingHandler.ts` | Same optional-Rollbar treatment. | Same as `lambda/index.ts`. |
+| `lambda/imageResizer.ts` | Resize body extracted into `resizeImages(di, event)`; adds `getImageResizerHandler(diBuilder)` so the self-hosted server can inject its DI; `handler` keeps its external shape. | Take upstream's resize body verbatim and re-wrap it: body → `resizeImages`, then re-add the two exports at the bottom. |
+| `src/utils/subscriptions.ts` | `Subscriptions_hasSubscription()` returns `true` when built with the `__SELF_HOSTED__` define. | Keep both: upstream's checks + the `declare const`/`isSelfHosted` preamble and the early return. |
+| `webpack.config.js` | `LIFTOSAUR_HOST` / `LIFTOSAUR_API_HOST` / `LIFTOSAUR_STREAMING_API_HOST` overrides for the `DefinePlugin` host globals, plus a `__SELF_HOSTED__` define in each config. | Keep both: re-wrap upstream's host expressions in `hostDefine()`/`apiHostDefine()`/`streamingApiHostDefine()` and keep `__SELF_HOSTED__` in every `DefinePlugin` block. |
+| `webpack.lambda.config.js` | Same overrides + `__SELF_HOSTED__`. | Same as `webpack.config.js`. |
+| `scripts/build-licenses.ts` | `existsSync` guard around `android/app/build.gradle` (absent in the server image build). | Keep both: re-apply the guard to upstream's file list. |
+| `tsconfig.json` | Adds `selfhosted/**/*` to `include`. | Keep both: re-add the entry. |
+| `tsconfig.lambda.json` | Adds `selfhosted/**/*` to `include`. | Keep both: re-add the entry. |
+| `package.json` | Adds `start:selfhosted` / `build:selfhosted` scripts; moves `nodemailer` to `dependencies` (the server bundle needs it at runtime). | Keep both: re-add the two scripts and keep `nodemailer` in `dependencies`. |
+| `package-lock.json` | Follows `package.json`. | Regenerate: take upstream's lock, then `npm install`. |
+| `.gitignore` | Un-ignores `/docs/self-hosting/`, ignores `/dist-selfhosted`. | Keep both: re-add the two lines. |
+| `README.md` | Self-hosting callout block near the top. | Keep both: re-add the block. |
 
 ## Known gaps / follow-ups (out of scope for the first pass)
 

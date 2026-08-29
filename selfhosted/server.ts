@@ -2,7 +2,7 @@
 import http from "http";
 import { getHandler } from "../lambda/index";
 import { getStreamingHandler } from "../lambda/streamingHandler";
-import { handler as imageResizerHandler } from "../lambda/imageResizer";
+import { getImageResizerHandler } from "../lambda/imageResizer";
 import {
   APIGatewayProxyEvent,
   APIGatewayProxyEventHeaders,
@@ -11,7 +11,7 @@ import {
   S3EventRecord,
 } from "aws-lambda";
 import { URL } from "url";
-import { buildDi } from "../lambda/utils/di";
+import { buildSelfHostedDi } from "./di";
 import { LogUtil } from "../lambda/utils/log";
 import fetch from "node-fetch";
 
@@ -106,6 +106,8 @@ function parseMinioRecords(body: string): S3EventRecord[] {
   });
 }
 
+const imageResizerHandler = getImageResizerHandler(() => buildSelfHostedDi(new LogUtil(), fetch));
+
 async function handleMinioEvent(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const token = process.env.LIFTOSAUR_WEBHOOK_TOKEN;
   if (token && req.headers.authorization !== `Bearer ${token}`) {
@@ -127,7 +129,7 @@ async function handleMinioEvent(req: http.IncomingMessage, res: http.ServerRespo
   }
 }
 
-const handler = getHandler(() => buildDi(new LogUtil(), fetch));
+const handler = getHandler(() => buildSelfHostedDi(new LogUtil(), fetch));
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -170,7 +172,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-const streamingHandler = getStreamingHandler(() => buildDi(new LogUtil(), fetch));
+const streamingHandler = getStreamingHandler(() => buildSelfHostedDi(new LogUtil(), fetch));
 
 const streamingServer = http.createServer(async (req, res) => {
   try {
