@@ -6,6 +6,16 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 COPY . .
+# Server-rendered pages bake __HOST__/__API_HOST__ at bundle time, so the public URL
+# must be known when the image is built, not just at runtime.
+ARG LIFTOSAUR_HOST
+ARG LIFTOSAUR_API_HOST
+ARG LIFTOSAUR_STREAMING_API_HOST
+ARG LIFTOSAUR_SELF_HOSTED=true
+ENV LIFTOSAUR_HOST=$LIFTOSAUR_HOST \
+    LIFTOSAUR_API_HOST=$LIFTOSAUR_API_HOST \
+    LIFTOSAUR_STREAMING_API_HOST=$LIFTOSAUR_STREAMING_API_HOST \
+    LIFTOSAUR_SELF_HOSTED=$LIFTOSAUR_SELF_HOSTED
 # Generates localdomain.js and src/generated/* (both gitignored), typechecks, then bundles
 # selfhosted/server.ts into dist-selfhosted/lambda/server.js with the same webpack setup as the lambda build.
 RUN npm run build:selfhosted

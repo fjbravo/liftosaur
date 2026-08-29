@@ -8,7 +8,15 @@ import { CollectionUtils_removeBy } from "./collection";
 import { SubscriptionReceipts_cleanupApple } from "./subscriptionReceipts";
 import { Thunk_postevent } from "../ducks/thunks";
 
+declare const __SELF_HOSTED__: boolean;
+
+// The define is absent in jest/native bundles, so guard with typeof - webpack folds it to a constant.
+const isSelfHosted = typeof __SELF_HOSTED__ !== "undefined" && __SELF_HOSTED__;
+
 export function Subscriptions_hasSubscription(subscription: ISubscription): boolean {
+  if (isSelfHosted) {
+    return true;
+  }
   if (subscription.key && subscription.key !== "unclaimed") {
     return true;
   }
