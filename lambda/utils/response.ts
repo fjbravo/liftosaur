@@ -2,6 +2,7 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import * as Cookie from "cookie";
 import { UrlUtils_build } from "../../src/utils/url";
 import { localdomain } from "../../src/localdomain";
+import { Utils_isSelfHosted } from "../utils";
 
 export const allowedHosts = [
   `${localdomain}.liftosaur.com:8080`,
@@ -43,10 +44,17 @@ export function ResponseUtils_getHeaders(event: APIGatewayProxyEvent): Record<st
   return headers;
 }
 
+// A self-hosted deployment runs on an arbitrary domain, and a cookie carrying a
+// Domain attribute for another site is rejected by browsers - so omit it there and
+// let the session cookie be host-only.
+export function ResponseUtils_sessionCookieDomain(): string | undefined {
+  return Utils_isSelfHosted() ? undefined : ".liftosaur.com";
+}
+
 export function ResponseUtils_clearSessionCookie(): string {
   return Cookie.serialize("session", "", {
     httpOnly: true,
-    domain: ".liftosaur.com",
+    domain: ResponseUtils_sessionCookieDomain(),
     path: "/",
     expires: new Date(1970, 0, 1),
   });

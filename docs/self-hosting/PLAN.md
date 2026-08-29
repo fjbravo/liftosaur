@@ -208,10 +208,24 @@ All inert unless the env var is set; AWS path unchanged otherwise.
 - [x] `docker compose config` parses; nginx config passes `nginx -t`, and the two
       presigned-URL locations were exercised against a stub upstream (path, query
       and `Host` forwarded verbatim).
-- [ ] Unit tests (`npm test`) unaffected.
-- [ ] Compose stack boots end-to-end where an environment with Docker is
-      available (signup → login → save workout → image upload). Not possible in
-      the build sandbox: the Docker CLI is present but there is no daemon.
+- [x] Unit tests (`npm test`): 1565 passing; the only 4 failures reproduce
+      identically on untouched `master` (pre-existing `__dirname` ESM issue in
+      `test/updates/signingCertificate.test.ts`).
+- [x] Compose stack boots end-to-end: bootstrap created all 23 tables and 10
+      buckets and registered the resizer webhook; every service healthy;
+      verified through nginx: server-rendered pages (`/`, `/about`,
+      `/programs`), the app shell, static assets, `/docs` and `/app`
+      redirects, email signup (verification mail landed in mailpit),
+      sign-in with a host-only session cookie, authenticated API calls,
+      presigned upload URL → PUT to MinIO through nginx (SigV4 intact) →
+      bucket-notification webhook → in-process sharp resize to 600×900 →
+      image served back via `/userimages/*`. Fixes that testing surfaced:
+      `.npmrc` missing from the server build, `build-licenses` crashing
+      without native projects, IPv6 listen fatal on IPv6-less hosts,
+      DynamoDB Local rejecting non-AWS-shaped access keys,
+      `LIFTOSAUR_INTERNAL_HOST` for server-side fetches of static content,
+      the hardcoded `.liftosaur.com` session-cookie domain, and absolute
+      nginx redirects dropping the public port.
 
 ## Environment variable contract
 
@@ -223,6 +237,7 @@ All inert unless the env var is set; AWS path unchanged otherwise.
 | `LIFTOSAUR_API_KEY` | yes | Admin/dashboard endpoint key. |
 | `LIFTOSAUR_CRYPTO_KEY` | yes | Generated random string (part of the secrets contract; currently unused by any code path but validated at startup). |
 | `DYNAMODB_ENDPOINT` | yes | e.g. `http://dynamodb:8000`. |
+| `LIFTOSAUR_INTERNAL_HOST` | set by compose | Internal origin (`http://web`) for server-side fetches of static content (program data, exercise images) when the public `HOST` is not reachable from inside the network. |
 | `S3_ENDPOINT` / `S3_PUBLIC_ENDPOINT` | yes / recommended | MinIO internal endpoint / host-reachable endpoint for presigned URLs. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | yes | MinIO credentials; any values for DynamoDB Local. |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | recommended | Transactional email; without it, email verification/password reset are disabled (signup/login still work). |

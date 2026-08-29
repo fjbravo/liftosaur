@@ -27,6 +27,9 @@ x-server-env: &server-env
   # Presigned URLs are handed to the browser, so they must point at the public origin;
   # nginx proxies /liftosauruserimages/ and /liftosaurexceptions2/ back to MinIO unmodified.
   S3_PUBLIC_ENDPOINT: ${HOST}
+  # Server-side fetches of static content (program data, exercise images) go straight to
+  # the web container - the public HOST is not always reachable from inside the network.
+  LIFTOSAUR_INTERNAL_HOST: http://web
   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
   AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
   AWS_REGION: ${AWS_REGION:-us-west-2}

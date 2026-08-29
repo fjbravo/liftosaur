@@ -131,7 +131,7 @@ export class ProgramImageGenerator {
     const exercisesRange = indexEntry.exercisesRange;
 
     const imageExercises = exercises.filter((e) => ExerciseImageUtils_exists(e, "small"));
-    const cdnHost = process.env.HOST || "https://www.liftosaur.com";
+    const cdnHost = process.env.LIFTOSAUR_INTERNAL_HOST || process.env.HOST || "https://www.liftosaur.com";
     const maxImages = 12;
     const displayExercises = imageExercises.slice(0, maxImages);
 
