@@ -2,10 +2,10 @@
 # Registry, so a deployment can pull prebuilt images instead of building locally
 # (see docs/self-hosting/README.md, "Pulling prebuilt images").
 #
-# The public URL is baked into the images at build time, so it comes from the
-# repository variable LIFTOSAUR_HOST (Settings -> Secrets and variables ->
-# Actions -> Variables). It must match the HOST value in the deployment's .env.
-# When the variable is unset, images are built for http://localhost.
+# The public URL is baked into the images at build time. It defaults to the
+# homelab deployment URL and can be overridden with the repository variable
+# LIFTOSAUR_HOST (Settings -> Secrets and variables -> Actions -> Variables).
+# Either way it must match the HOST value in the deployment's .env.
 
 name: Self-hosted images
 
@@ -61,9 +61,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            LIFTOSAUR_HOST=${{ vars.LIFTOSAUR_HOST || 'http://localhost' }}
-            LIFTOSAUR_API_HOST=${{ vars.LIFTOSAUR_HOST || 'http://localhost' }}
-            LIFTOSAUR_STREAMING_API_HOST=${{ vars.LIFTOSAUR_HOST || 'http://localhost' }}
+            LIFTOSAUR_HOST=${{ vars.LIFTOSAUR_HOST || 'https://liftosaur.bylab.io' }}
+            LIFTOSAUR_API_HOST=${{ vars.LIFTOSAUR_HOST || 'https://liftosaur.bylab.io' }}
+            LIFTOSAUR_STREAMING_API_HOST=${{ vars.LIFTOSAUR_HOST || 'https://liftosaur.bylab.io' }}
             LIFTOSAUR_SELF_HOSTED=true
             COMMIT_HASH=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.image }}
