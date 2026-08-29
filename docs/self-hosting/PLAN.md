@@ -265,6 +265,7 @@ and `devserver.ts` are unaffected.
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | recommended | Transactional email; without it, email verification/password reset are disabled (signup/login still work). |
 | `ANTHROPIC_API_KEY` | no | Enables the AI Liftoscript generator. |
 | `OPENAI_API_KEY` | no | Alternate LLM provider. |
+| `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` | no | Route AI through an OpenAI-compatible gateway (self-hosted LLM router): its `/v1` base URL, the model/alias to request, and its key (`ANTHROPIC_API_KEY` doubles as the key when `LLM_API_KEY` is unset). |
 | `ROLLBAR_SERVER_TOKEN` | no | Error reporting (off by default). |
 | `PORT` / `STREAMING_PORT` | no | Server listen ports, default 3000 / 3001. |
 | `LIFTOSAUR_WEBHOOK_TOKEN` | no | When set, the MinIO bucket-notification endpoint requires `Authorization: Bearer <token>`. |
@@ -296,8 +297,10 @@ in-place gate, so a wrong resolution fails CI rather than silently reverting.
 | `lambda/dao/buckets.ts` | `getUserImagesPrefix()` returns `${HOST}/userimages/` in self-hosted mode. | Keep both: upstream's env branches + the self-hosted branch first. |
 | `lambda/dao/programDao.ts` | `getCdnHost()` prefers `LIFTOSAUR_INTERNAL_HOST`. | Keep both: prepend `process.env.LIFTOSAUR_INTERNAL_HOST ||` to upstream's expression. |
 | `lambda/utils/programImageGenerator.ts` | Same `LIFTOSAUR_INTERNAL_HOST` precedence for `cdnHost`. | Keep both: prepend `process.env.LIFTOSAUR_INTERNAL_HOST ||`. |
-| `lambda/index.ts` | Rollbar is optional (`ROLLBAR_SERVER_TOKEN`, no client at all in self-hosted mode) via `withRollbar()` + `rollbar?.`; session cookies use `ResponseUtils_sessionCookieDomain()`. | Keep both. New upstream `rollbar.` call sites become `rollbar?.`; new `rollbar.lambdaHandler(...)` wrappers become `withRollbar(...)`; new session cookies use the domain helper. |
-| `lambda/streamingHandler.ts` | Same optional-Rollbar treatment. | Same as `lambda/index.ts`. |
+| `lambda/index.ts` | Rollbar is optional (`ROLLBAR_SERVER_TOKEN`, no client at all in self-hosted mode) via `withRollbar()` + `rollbar?.`; session cookies use `ResponseUtils_sessionCookieDomain()`; LLM provider built via `Llm_buildProvider(anthropicKey)` instead of `new ClaudeProvider(...)`. | Keep both. New upstream `rollbar.` call sites become `rollbar?.`; new `rollbar.lambdaHandler(...)` wrappers become `withRollbar(...)`; new session cookies use the domain helper; new LLM provider constructions go through the factory. |
+| `lambda/streamingHandler.ts` | Same optional-Rollbar treatment; same `Llm_buildProvider` factory call. | Same as `lambda/index.ts`. |
+| `lambda/utils/llms/openai.ts` | Optional `baseUrl` constructor param (OpenAI-compatible gateway endpoint); default behavior unchanged. | Keep both: upstream's request logic + the `endpoint()` helper and ctor param. |
+| `lambda/utils/llms/httpStreaming.ts` | Optional `port`/`protocol` request fields (plain-HTTP gateways); defaults unchanged. | Keep both: add the two optional fields and the transport pick to upstream's version. |
 | `lambda/imageResizer.ts` | Resize body extracted into `resizeImages(di, event)`; adds `getImageResizerHandler(diBuilder)` so the self-hosted server can inject its DI; `handler` keeps its external shape. | Take upstream's resize body verbatim and re-wrap it: body → `resizeImages`, then re-add the two exports at the bottom. |
 | `src/utils/subscriptions.ts` | `Subscriptions_hasSubscription()` returns `true` when built with the `__SELF_HOSTED__` define. | Keep both: upstream's checks + the `declare const`/`isSelfHosted` preamble and the early return. |
 | `webpack.config.js` | `LIFTOSAUR_HOST` / `LIFTOSAUR_API_HOST` / `LIFTOSAUR_STREAMING_API_HOST` overrides for the `DefinePlugin` host globals, plus a `__SELF_HOSTED__` define in each config. | Keep both: re-wrap upstream's host expressions in `hostDefine()`/`apiHostDefine()`/`streamingApiHostDefine()` and keep `__SELF_HOSTED__` in every `DefinePlugin` block. |
