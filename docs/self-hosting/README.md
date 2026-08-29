@@ -73,6 +73,15 @@ docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
 docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
 ```
 
+## Keeping the fork up to date with upstream
+
+`.github/workflows/upstream-sync.yml` runs weekly (Mondays 06:00 UTC, or manually via
+`workflow_dispatch`) and, when upstream `astashov/liftosaur` has new commits, pushes them
+to the `upstream-sync` branch and opens a PR into `master`. Merging that PR is the sync:
+it keeps the self-hosting changes on top, surfaces any conflicts in the PR itself, and —
+because it is a push to `master` — automatically publishes fresh images to GHCR. The
+schedule only fires once the workflow file is on the default branch.
+
 ## What you get
 
 | Works out of the box | Notes |
