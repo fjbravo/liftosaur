@@ -152,9 +152,12 @@ jobs:
           pr_number=$(gh pr list --head upstream-sync --base master --state open --json number --jq '.[0].number // empty')
 
           if [ -z "$pr_number" ]; then
-            gh pr create --head upstream-sync --base master \
+            if ! gh pr create --head upstream-sync --base master \
               --title "Sync fork with upstream astashov/liftosaur" \
-              --body-file pr-body.md
+              --body-file pr-body.md; then
+              echo "::error::Could not create the sync PR. GITHUB_TOKEN can only create pull requests when 'Allow GitHub Actions to create and approve pull requests' is enabled (Settings -> Actions -> General -> Workflow permissions). The upstream-sync branch was pushed - create the PR manually from it, or enable the setting and re-run this workflow."
+              exit 1
+            fi
           else
             echo "Sync PR #$pr_number already open - branch and description updated in place."
             gh pr edit "$pr_number" --body-file pr-body.md
