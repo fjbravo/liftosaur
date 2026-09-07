@@ -15,6 +15,7 @@ import { ApiKeyDao } from "../lambda/dao/apiKeyDao";
 import { Storage_getDefault } from "../src/models/storage";
 import { MockFetch } from "./utils/mockFetch";
 import sinon from "sinon";
+import JWT from "jsonwebtoken";
 
 function buildMcpEvent(body: unknown, headers?: Record<string, string>): APIGatewayProxyEvent {
   return {
@@ -26,6 +27,29 @@ function buildMcpEvent(body: unknown, headers?: Record<string, string>): APIGate
     path: "/mcp",
     pathParameters: {},
     queryStringParameters: {},
+    multiValueQueryStringParameters: {},
+    stageVariables: {},
+    requestContext: {} as any,
+    resource: "",
+  };
+}
+
+function buildEvent(args: {
+  method: string;
+  path: string;
+  query?: Record<string, string>;
+  headers?: Record<string, string>;
+  body?: string;
+}): APIGatewayProxyEvent {
+  return {
+    body: args.body ?? null,
+    headers: args.headers || {},
+    multiValueHeaders: {},
+    httpMethod: args.method,
+    isBase64Encoded: false,
+    path: args.path,
+    pathParameters: {},
+    queryStringParameters: args.query || {},
     multiValueQueryStringParameters: {},
     stageVariables: {},
     requestContext: {} as any,
@@ -160,6 +184,175 @@ describe("MCP", () => {
 
     it("rejects invalid JSON-RPC", async () => {
       const result = await handler(buildMcpEvent({ not: "jsonrpc" }), ctx);
+      expect(result.statusCode).to.equal(400);
+    });
+  });
+
+  describe("oauth authorize consent", () => {
+    async function registerClient(redirectUri = "https://client.example/cb"): Promise<string> {
+      const client = await new OauthDao(di).createClient([redirectUri], "Test MCP Client");
+      return client.clientId;
+    }
+
+    function sessionCookie(id: string): string {
+      return `session=${JWT.sign({ userId: id }, "cookieSecret")}`;
+    }
+
+    function authorizeQuery(clientId: string, redirectUri = "https://client.example/cb"): Record<string, string> {
+      return {
+        response_type: "code",
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: "abc123challenge",
+        code_challenge_method: "S256",
+        state: "xyz",
+      };
+    }
+
+    function extractConsentToken(html: string): string {
+      const match = html.match(/name="consent_token" value="([^"]+)"/);
+      if (!match) {
+        throw new Error("No consent_token in page");
+      }
+      return match[1];
+    }
+
+    async function getConsentPage(clientId: string, redirectUri?: string): Promise<APIGatewayProxyResult> {
+      return handler(
+        buildEvent({
+          method: "GET",
+          path: "/oauth/authorize",
+          query: authorizeQuery(clientId, redirectUri),
+          headers: { Cookie: sessionCookie(userId) },
+        }),
+        ctx
+      );
+    }
+
+    function postConsent(
+      consentToken: string | undefined,
+      decision: string,
+      cookie?: string
+    ): Promise<APIGatewayProxyResult> {
+      const params = new URLSearchParams();
+      if (consentToken != null) {
+        params.set("consent_token", consentToken);
+      }
+      params.set("decision", decision);
+      return handler(
+        buildEvent({
+          method: "POST",
+          path: "/oauth/authorize",
+          headers: {
+            Cookie: cookie ?? sessionCookie(userId),
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: params.toString(),
+        }),
+        ctx
+      );
+    }
+
+    it("redirects an unauthenticated user to login without minting anything", async () => {
+      const clientId = await registerClient();
+      const result = await handler(
+        buildEvent({ method: "GET", path: "/oauth/authorize", query: authorizeQuery(clientId) }),
+        ctx
+      );
+      expect(result.statusCode).to.equal(302);
+      expect(result.headers!.location).to.include("/login?url=");
+    });
+
+    it("GET renders a consent page and does NOT mint a code", async () => {
+      const clientId = await registerClient();
+      const result = await getConsentPage(clientId);
+      expect(result.statusCode).to.equal(200);
+      expect(result.headers!["content-type"]).to.include("text/html");
+      expect(result.body).to.include("Test MCP Client");
+      // The whole point: a GET must not produce a redirect back to the client with a code.
+      expect(result.body).to.not.include("code=");
+      expect(result.headers!.location).to.equal(undefined);
+    });
+
+    it("GET consent page surfaces the redirect host and an unverified warning", async () => {
+      // Client name is self-asserted, so the page must show where the code
+      // actually goes plus a caution that the name isn't verified.
+      const clientId = await registerClient("https://evil.example/cb");
+      const result = await getConsentPage(clientId, "https://evil.example/cb");
+      expect(result.body).to.include("evil.example");
+      expect(result.body.toLowerCase()).to.include("verified");
+    });
+
+    it("GET consent page forbids framing (anti-clickjacking)", async () => {
+      const clientId = await registerClient();
+      const result = await getConsentPage(clientId);
+      expect(result.headers!["x-frame-options"]).to.equal("DENY");
+      expect(result.headers!["content-security-policy"]).to.include("frame-ancestors 'none'");
+    });
+
+    it("POST allow mints a code and redirects to the client with state", async () => {
+      const clientId = await registerClient();
+      const page = await getConsentPage(clientId);
+      const token = extractConsentToken(page.body);
+      const result = await postConsent(token, "allow");
+      expect(result.statusCode).to.equal(302);
+      const loc = new URL(result.headers!.location as string);
+      expect(loc.origin + loc.pathname).to.equal("https://client.example/cb");
+      expect(loc.searchParams.get("code")).to.be.a("string").and.not.empty;
+      expect(loc.searchParams.get("state")).to.equal("xyz");
+    });
+
+    it("POST deny redirects with access_denied and no code", async () => {
+      const clientId = await registerClient();
+      const page = await getConsentPage(clientId);
+      const token = extractConsentToken(page.body);
+      const result = await postConsent(token, "deny");
+      expect(result.statusCode).to.equal(302);
+      const loc = new URL(result.headers!.location as string);
+      expect(loc.searchParams.get("error")).to.equal("access_denied");
+      expect(loc.searchParams.get("code")).to.equal(null);
+    });
+
+    it("POST rejects a forged/unsigned consent token", async () => {
+      const forged = JWT.sign(
+        {
+          userId,
+          clientId: "whatever",
+          redirectUri: "https://client.example/cb",
+          codeChallenge: "x",
+          codeChallengeMethod: "S256",
+        },
+        "wrong-secret"
+      );
+      const result = await postConsent(forged, "allow");
+      expect(result.statusCode).to.equal(400);
+      expect(parseBody(result).error).to.equal("invalid_request");
+    });
+
+    it("POST rejects a valid token replayed under a different session (CSRF binding)", async () => {
+      const clientId = await registerClient();
+      const page = await getConsentPage(clientId);
+      const token = extractConsentToken(page.body);
+      // Attacker's own valid session, victim-issued token.
+      const result = await postConsent(token, "allow", sessionCookie("someone-else"));
+      expect(result.statusCode).to.equal(401);
+      expect(parseBody(result).error).to.equal("access_denied");
+    });
+
+    it("POST rejects the consent token being used as its own session cookie", async () => {
+      const clientId = await registerClient();
+      const page = await getConsentPage(clientId);
+      const token = extractConsentToken(page.body);
+      // The consent token carries userId; if it were signed with the raw cookie
+      // secret it would also validate as a session. Submitting it in both slots
+      // must fail - the derived signing key makes it invalid as a session cookie.
+      const result = await postConsent(token, "allow", `session=${token}`);
+      expect(result.statusCode).to.equal(401);
+      expect(parseBody(result).error).to.equal("access_denied");
+    });
+
+    it("POST rejects a missing consent token", async () => {
+      const result = await postConsent(undefined, "allow");
       expect(result.statusCode).to.equal(400);
     });
   });
@@ -387,6 +580,30 @@ describe("MCP", () => {
       expect(updateBody.result.isError).to.be.undefined;
       const updateData = JSON.parse(updateBody.result.content[0].text);
       expect(updateData.stats).to.not.be.undefined;
+    });
+
+    it("keeps a vector clock on the planner after an update, attributed to the MCP client", async () => {
+      const programText = "# Week 1\n## Day 1\nSquat / 3x5 / 135lb / progress: lp(5lb)";
+      const createResult = await handler(
+        buildMcpEvent(toolCall("create_program", { name: "Test Program", text: programText }), authHeaders(token)),
+        ctx
+      );
+      const createData = JSON.parse(parseBody(createResult).result.content[0].text);
+
+      const updatedText = "# Week 1\n## Day 1\nSquat / 5x5 / 185lb / progress: lp(10lb)";
+      await handler(
+        buildMcpEvent(toolCall("update_program", { id: createData.id, text: updatedText }), authHeaders(token)),
+        ctx
+      );
+
+      const user = await di.dynamo.get<any>({ tableName: userTableNames.prod.users, key: { id: userId } });
+      const programVersions = user.storage._versions.programs.items;
+      const planner = Object.values(programVersions)[0] as any;
+      // A bare timestamp here means the clock was destroyed: every device's counter resets to 0, and a
+      // replica holding a pre-reset count then outranks the server forever.
+      expect(planner.planner.vc).to.be.an("object");
+      expect(Object.keys(planner.planner.vc)).to.have.length(1);
+      expect(Object.keys(planner.planner.vc)[0]).to.match(/^mcp_|^api_/);
     });
 
     it("deletes a program", async () => {

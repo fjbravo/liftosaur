@@ -1,6 +1,7 @@
 import * as cdk from "aws-cdk-lib";
 import { aws_dynamodb as dynamodb } from "aws-cdk-lib";
 import { aws_lambda as lambda } from "aws-cdk-lib";
+import { aws_logs as logs } from "aws-cdk-lib";
 import { aws_apigateway as apigw } from "aws-cdk-lib";
 import { aws_secretsmanager as sm } from "aws-cdk-lib";
 import { aws_s3 as s3 } from "aws-cdk-lib";
@@ -9,15 +10,42 @@ import { aws_iam as iam } from "aws-cdk-lib";
 import { aws_events, aws_events_targets } from "aws-cdk-lib";
 import { aws_cloudfront as cloudfront } from "aws-cdk-lib";
 import { aws_cloudfront_origins as origins } from "aws-cdk-lib";
+import { aws_wafv2 as wafv2 } from "aws-cdk-lib";
 import { aws_s3_deployment as s3Deployment } from "aws-cdk-lib";
 import { aws_s3_notifications } from "aws-cdk-lib";
 import { aws_codepipeline as codepipeline } from "aws-cdk-lib";
 import { aws_codepipeline_actions as codepipeline_actions } from "aws-cdk-lib";
 import { aws_codebuild as codebuild } from "aws-cdk-lib";
+import { aws_cloudwatch as cloudwatch } from "aws-cdk-lib";
+import { aws_cloudwatch_actions as cloudwatch_actions } from "aws-cdk-lib";
+import { aws_sns as sns } from "aws-cdk-lib";
+import { aws_sns_subscriptions as sns_subscriptions } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { LftS3Buckets } from "../lambda/dao/buckets";
 import childProcess from "child_process";
 import localdomain from "../localdomain";
+
+const PROD_WAF_WEB_ACL_ARN =
+  "arn:aws:wafv2:us-east-1:366191129585:global/webacl/LiftosaurWebAcl/a8602227-4a8f-49be-8e8c-b3f6073551ce";
+
+const ORIGIN_VERIFY_HEADER = "x-origin-verify";
+
+const ORIGIN_VERIFY_SECRET = process.env.LFT_ORIGIN_VERIFY_SECRET;
+if (!ORIGIN_VERIFY_SECRET) {
+  throw new Error(
+    "LFT_ORIGIN_VERIFY_SECRET is not set. Without it the API Gateway origin stays reachable directly, " +
+      "bypassing the CloudFront WAF. CodeBuild reads it from the lftOriginVerifySecret secret " +
+      "(shared by dev and prod); export it before running cdk locally:\n" +
+      "  export LFT_ORIGIN_VERIFY_SECRET=$(aws secretsmanager get-secret-value " +
+      "--secret-id lftOriginVerifySecret --query SecretString --output text)"
+  );
+}
+
+const ORIGIN_VERIFY_ENFORCE = true;
+
+const ALARM_EMAIL = "info@liftosaur.com";
+
+const LAMBDA_RESERVED_CONCURRENCY = 300;
 
 function getCommitHashes(): { commitHash: string; fullCommitHash: string } {
   const commitHash = childProcess.execSync("git rev-parse --short HEAD").toString().trim();
@@ -278,26 +306,11 @@ export class LiftosaurCdkStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
-    const aiLogsTable = new dynamodb.Table(this, `LftAiLogs${suffix}`, {
-      tableName: `lftAiLogs${suffix}`,
-      partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
-      timeToLiveAttribute: "ttl",
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
-    });
-
     const aiMuscleCaches = new dynamodb.Table(this, `LftAiMuscleCaches${suffix}`, {
       tableName: `lftAiMuscleCaches${suffix}`,
       partitionKey: { name: "key", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
-    });
-
-    // Add GSI for querying by userId
-    aiLogsTable.addGlobalSecondaryIndex({
-      indexName: "userId-timestamp-index",
-      partitionKey: { name: "userId", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "timestamp", type: dynamodb.AttributeType.NUMBER },
     });
 
     const secretArns = {
@@ -320,7 +333,7 @@ export class LiftosaurCdkStack extends cdk.Stack {
 
     const debugbucket = new s3.Bucket(this, `LftS3Debugs${suffix}`, {
       bucketName: `${LftS3Buckets.debugs}${suffix.toLowerCase()}`,
-      lifecycleRules: [{ expiration: cdk.Duration.days(365) }],
+      lifecycleRules: [{ expiration: cdk.Duration.days(30) }],
     });
 
     const exceptionsbucket = new s3.Bucket(this, `LftS3Exceptions${suffix}`, {
@@ -406,6 +419,7 @@ export class LiftosaurCdkStack extends cdk.Stack {
       layers: [depsLayer],
       timeout: cdk.Duration.seconds(60),
       handler: "lambda/imageResizer.handler",
+      logRetention: logs.RetentionDays.ONE_MONTH,
       environment: {
         IS_DEV: `${isDev}`,
       },
@@ -426,6 +440,8 @@ export class LiftosaurCdkStack extends cdk.Stack {
       layers: [depsLayer],
       timeout: cdk.Duration.seconds(isDev ? 240 : 300),
       handler: "lambda/run.handler",
+      reservedConcurrentExecutions: LAMBDA_RESERVED_CONCURRENCY,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       environment: {
         IS_LOCAL: "false",
         IS_DEV: `${isDev}`,
@@ -443,6 +459,7 @@ export class LiftosaurCdkStack extends cdk.Stack {
       layers: [depsLayer],
       timeout: cdk.Duration.seconds(900),
       handler: `lambda/run.LftStatsLambda${suffix}`,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       environment: {
         IS_DEV: `${isDev}`,
       },
@@ -467,6 +484,7 @@ export class LiftosaurCdkStack extends cdk.Stack {
       layers: [depsLayer],
       timeout: cdk.Duration.seconds(900),
       handler: `lambda/run.LftReconcilePaymentsLambda${suffix}`,
+      logRetention: logs.RetentionDays.ONE_MONTH,
       environment: {
         IS_DEV: `${isDev}`,
       },
@@ -504,7 +522,133 @@ export class LiftosaurCdkStack extends cdk.Stack {
     });
     restApi.root.addProxy();
 
-    aiLogsTable.grantReadWriteData(lambdaFunction);
+    if (ORIGIN_VERIFY_SECRET) {
+      const originVerifyWebAcl = new wafv2.CfnWebACL(this, `LftRegionalWebAcl${suffix}`, {
+        name: `LiftosaurRegionalWebAcl${suffix}`,
+        scope: "REGIONAL",
+        defaultAction: { allow: {} },
+        visibilityConfig: {
+          cloudWatchMetricsEnabled: true,
+          metricName: `LiftosaurRegionalWebAcl${suffix}`,
+          sampledRequestsEnabled: true,
+        },
+        rules: [
+          {
+            name: "OriginVerify",
+            priority: 1,
+            action: ORIGIN_VERIFY_ENFORCE ? { block: {} } : { count: {} },
+            statement: {
+              notStatement: {
+                statement: {
+                  byteMatchStatement: {
+                    fieldToMatch: { singleHeader: { Name: ORIGIN_VERIFY_HEADER } },
+                    positionalConstraint: "EXACTLY",
+                    searchString: ORIGIN_VERIFY_SECRET,
+                    textTransformations: [{ priority: 0, type: "NONE" }],
+                  },
+                },
+              },
+            },
+            visibilityConfig: {
+              cloudWatchMetricsEnabled: true,
+              metricName: `OriginVerify${suffix}`,
+              sampledRequestsEnabled: true,
+            },
+          },
+        ],
+      });
+
+      new wafv2.CfnWebACLAssociation(this, `LftRegionalWebAclAssoc${suffix}`, {
+        resourceArn: restApi.deploymentStage.stageArn,
+        webAclArn: originVerifyWebAcl.attrArn,
+      });
+    }
+
+    const alarmTopic = new sns.Topic(this, `LftAlarmTopic${suffix}`, {
+      topicName: `LiftosaurAlarms${suffix}`,
+      displayName: "Liftosaur alarms",
+    });
+    alarmTopic.addSubscription(new sns_subscriptions.EmailSubscription(ALARM_EMAIL));
+
+    const addAlarm = (
+      alarmId: string,
+      metric: cloudwatch.Metric,
+      threshold: number,
+      evaluationPeriods: number,
+      alarmDescription: string
+    ): void => {
+      const alarm = new cloudwatch.Alarm(this, `${alarmId}${suffix}`, {
+        alarmName: `Liftosaur${alarmId}${suffix}`,
+        metric,
+        threshold,
+        evaluationPeriods,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        alarmDescription,
+      });
+      alarm.addAlarmAction(new cloudwatch_actions.SnsAction(alarmTopic));
+    };
+
+    const fiveMin = cdk.Duration.minutes(5);
+
+    addAlarm(
+      "LambdaConcurrency",
+      lambdaFunction.metric("ConcurrentExecutions", { statistic: "Maximum", period: fiveMin }),
+      200,
+      2,
+      `Lambda concurrency >= 200. Approaching the ${LAMBDA_RESERVED_CONCURRENCY} cap, past which requests are throttled.`
+    );
+
+    addAlarm(
+      "LambdaErrors",
+      lambdaFunction.metricErrors({ statistic: "Sum", period: fiveMin }),
+      10,
+      1,
+      "Lambda errors >= 10 in 5 minutes."
+    );
+
+    addAlarm(
+      "AiMuscleCacheWrites",
+      aiMuscleCaches.metricConsumedWriteCapacityUnits({ statistic: "Sum", period: fiveMin }),
+      100,
+      1,
+      "Writes to the AI muscle cache >= 100 in 5 minutes."
+    );
+
+    addAlarm(
+      "ShorturlWrites",
+      urlsTable.metricConsumedWriteCapacityUnits({ statistic: "Sum", period: fiveMin }),
+      500,
+      1,
+      "Writes to the shorturl table >= 500 in 5 minutes"
+    );
+
+    addAlarm(
+      "EventWrites",
+      eventsTable.metricConsumedWriteCapacityUnits({ statistic: "Sum", period: fiveMin }),
+      20000,
+      1,
+      "Writes to the events table >= 20000 in 5 minutes"
+    );
+
+    addAlarm(
+      "OriginVerify",
+      new cloudwatch.Metric({
+        namespace: "AWS/WAFV2",
+        metricName: ORIGIN_VERIFY_ENFORCE ? "BlockedRequests" : "CountedRequests",
+        dimensionsMap: {
+          WebACL: `LiftosaurRegionalWebAcl${suffix}`,
+          Rule: "OriginVerify",
+          Region: cdk.Stack.of(this).region,
+        },
+        statistic: "Sum",
+        period: fiveMin,
+      }),
+      50,
+      1,
+      "50+ requests in 5 minutes reached the API Gateway origin without the CloudFront header, bypassing the CloudFront WAF."
+    );
+
     aiMuscleCaches.grantReadWriteData(lambdaFunction);
     bucket.grantReadWrite(lambdaFunction);
     debugbucket.grantReadWrite(lambdaFunction);
@@ -552,97 +696,6 @@ export class LiftosaurCdkStack extends cdk.Stack {
         effect: iam.Effect.ALLOW,
       })
     );
-
-    // Streaming Lambda for AI conversion
-    const streamingLambdaFunction = new lambda.Function(this, `LftStreamingLambda${suffix}`, {
-      runtime: lambda.Runtime.NODEJS_24_X,
-      functionName: `LftStreamingLambda${suffix}`,
-      code: lambda.Code.fromAsset("dist-lambda"),
-      memorySize: 1024,
-      layers: [depsLayer],
-      timeout: cdk.Duration.seconds(300),
-      handler: "lambda/run.streamingHandler",
-      environment: {
-        IS_LOCAL: "false",
-        IS_DEV: `${isDev}`,
-        COMMIT_HASH: commitHash,
-        FULL_COMMIT_HASH: fullCommitHash,
-      },
-    });
-
-    // Grant necessary permissions
-    allSecrets.grantRead(streamingLambdaFunction);
-    usersTable.grantReadWriteData(streamingLambdaFunction);
-    aiLogsTable.grantReadWriteData(streamingLambdaFunction);
-
-    // Add Lambda Function URL with streaming response
-    const functionUrl = streamingLambdaFunction.addFunctionUrl({
-      authType: lambda.FunctionUrlAuthType.NONE, // Public access
-      cors: {
-        allowedOrigins: isDev
-          ? [
-              `https://${localdomain.main}.liftosaur.com:8080`,
-              "https://stage.liftosaur.com",
-              "https://www.liftosaur.com",
-            ]
-          : ["https://www.liftosaur.com"],
-        allowedMethods: [lambda.HttpMethod.POST],
-        allowedHeaders: ["Content-Type", "Cookie"],
-        allowCredentials: true,
-        maxAge: cdk.Duration.days(1),
-      },
-      invokeMode: lambda.InvokeMode.RESPONSE_STREAM, // Enable streaming
-    });
-
-    // Extract the Lambda Function URL domain
-    const functionUrlDomain = cdk.Fn.select(2, cdk.Fn.split("/", functionUrl.url));
-
-    // Create a response headers policy for CORS
-    const responseHeadersPolicy = new cloudfront.ResponseHeadersPolicy(this, `LftStreamingResponseHeaders${suffix}`, {
-      corsBehavior: {
-        accessControlAllowOrigins: isDev
-          ? [
-              `https://${localdomain.main}.liftosaur.com:8080`,
-              "https://stage.liftosaur.com",
-              "https://www.liftosaur.com",
-            ]
-          : ["https://www.liftosaur.com"],
-        accessControlAllowHeaders: ["Content-Type", "Cookie"],
-        accessControlAllowMethods: ["POST", "OPTIONS"],
-        accessControlAllowCredentials: true,
-        originOverride: true,
-      },
-    });
-
-    // Create CloudFront distribution for custom domain
-    const streamingDistribution = new cloudfront.Distribution(this, `LftStreamingDistribution${suffix}`, {
-      defaultBehavior: {
-        origin: new origins.HttpOrigin(functionUrlDomain, {
-          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
-        }),
-        allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
-        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
-        responseHeadersPolicy,
-      },
-      domainNames: [`streaming-api${isDev ? "-dev" : ""}.liftosaur.com`],
-      certificate: streamingCert,
-    });
-
-    // Output the CloudFront distribution domain
-    new cdk.CfnOutput(this, `StreamingDistributionDomain${suffix}`, {
-      value: streamingDistribution.distributionDomainName,
-      description: "CloudFront distribution for streaming endpoint",
-    });
-
-    // Output the custom domain
-    new cdk.CfnOutput(this, `StreamingCustomDomain${suffix}`, {
-      value: `https://streaming-api${isDev ? "-dev" : ""}.liftosaur.com`,
-      description: "Custom domain for streaming endpoint (requires DNS setup)",
-    });
-
-    // --- Static assets S3 bucket + CloudFront distribution ---
 
     const staticBucket = new s3.Bucket(this, `LftS3Static${suffix}`, {
       bucketName: `${LftS3Buckets.static}${suffix.toLowerCase()}`,
@@ -710,6 +763,15 @@ export class LiftosaurCdkStack extends cdk.Stack {
       },
     });
 
+    const userImagesPolicy = new cloudfront.ResponseHeadersPolicy(this, `LftUserImages${suffix}`, {
+      securityHeadersBehavior: {
+        contentTypeOptions: { override: true },
+      },
+      customHeadersBehavior: {
+        customHeaders: [{ header: "Content-Disposition", value: "attachment", override: true }],
+      },
+    });
+
     const s3CachedBehavior: cloudfront.BehaviorOptions = {
       origin: s3Origin,
       cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
@@ -724,6 +786,7 @@ export class LiftosaurCdkStack extends cdk.Stack {
     };
 
     const mainDomain = isDev ? "stage.liftosaur.com" : "www.liftosaur.com";
+    const apiDomain = isDev ? "api3-dev.liftosaur.com" : "api3.liftosaur.com";
 
     const rewriteUrls = new cloudfront.Function(this, `LftRewriteUrls${suffix}`, {
       functionName: `LftRewriteUrls${suffix}`,
@@ -867,6 +930,7 @@ export class LiftosaurCdkStack extends cdk.Stack {
       originPath: `/${restApi.deploymentStage.stageName}`,
       originShieldEnabled: true,
       originShieldRegion: "us-west-2",
+      ...(ORIGIN_VERIFY_SECRET ? { customHeaders: { [ORIGIN_VERIFY_HEADER]: ORIGIN_VERIFY_SECRET } } : {}),
     });
 
     const cachedPageWithDeviceBehavior: cloudfront.BehaviorOptions = {
@@ -897,9 +961,6 @@ export class LiftosaurCdkStack extends cdk.Stack {
       ],
     };
 
-    // Forwards CloudFront's synthetic viewer-country header to the origin (the managed AllViewer
-    // policies don't include CloudFront-generated headers). Scoped to the uncached /api/geo behavior
-    // so it never affects edge caching of the SSR pages.
     const geoOriginRequestPolicy = new cloudfront.OriginRequestPolicy(this, `LftGeoOriginRequestPolicy${suffix}`, {
       originRequestPolicyName: `LftGeoOriginRequestPolicy${suffix}`,
       headerBehavior: cloudfront.OriginRequestHeaderBehavior.allowList("CloudFront-Viewer-Country", "Origin"),
@@ -909,7 +970,8 @@ export class LiftosaurCdkStack extends cdk.Stack {
 
     const mainDistribution = new cloudfront.Distribution(this, `LftMainDistribution${suffix}`, {
       certificate: streamingCert,
-      domainNames: [mainDomain],
+      domainNames: [mainDomain, apiDomain],
+      webAclId: isDev ? undefined : PROD_WAF_WEB_ACL_ARN || undefined,
       defaultBehavior: {
         origin: apiOrigin,
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
@@ -1113,6 +1175,7 @@ export class LiftosaurCdkStack extends cdk.Stack {
           origin: userImagesOrigin,
           cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          responseHeadersPolicy: userImagesPolicy,
           functionAssociations: [
             {
               function: stripPathPrefix,
@@ -1150,6 +1213,51 @@ export class LiftosaurCdkStack extends cdk.Stack {
 
     deployStatic.node.addDependency(deployChunks);
 
+    if (!isDev) {
+      const apexCert = acm.Certificate.fromCertificateArn(
+        this,
+        "LftApexCert",
+        "arn:aws:acm:us-east-1:366191129585:certificate/6e0f15b7-bf3e-42a9-abe6-6daad6a95d69"
+      );
+      const apexRedirect = new cloudfront.Function(this, "LftApexRedirect", {
+        functionName: "LftApexRedirect",
+        code: cloudfront.FunctionCode.fromInline(`
+          function handler(event) {
+            var req = event.request;
+            var qs = req.querystring;
+            var query = '';
+            for (var k in qs) {
+              query += (query ? '&' : '?') + k + (qs[k].value ? '=' + qs[k].value : '');
+            }
+            return {
+              statusCode: 301,
+              statusDescription: 'Moved Permanently',
+              headers: { location: { value: 'https://www.liftosaur.com' + req.uri + query } },
+            };
+          }
+        `),
+      });
+      const apexDistribution = new cloudfront.Distribution(this, "LftApexRedirectDistribution", {
+        certificate: apexCert,
+        domainNames: ["liftosaur.com"],
+        defaultBehavior: {
+          origin: new origins.HttpOrigin("www.liftosaur.com"),
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+          functionAssociations: [
+            {
+              function: apexRedirect,
+              eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+            },
+          ],
+        },
+      });
+      new cdk.CfnOutput(this, "ApexRedirectDistributionDomain", {
+        value: apexDistribution.distributionDomainName,
+        description: "CloudFront domain for the liftosaur.com apex -> www redirect (point apex DNS here)",
+      });
+    }
+
     new cdk.CfnOutput(this, `MainDistributionDomain${suffix}`, {
       value: mainDistribution.distributionDomainName,
       description: "CloudFront distribution domain for main site",
@@ -1184,6 +1292,7 @@ class LiftosaurPipelineStack extends cdk.Stack {
               "npm run upload-source-maps",
               "npm run build:lambda",
               `cdk deploy ${stackName} --require-approval never`,
+              ...(isDev ? [] : ["cdk deploy LiftosaurWaf --require-approval never"]),
               `STAGE=${isDev ? "dev" : "prod"} npm run build:rn-bundle`,
             ],
           },
@@ -1205,6 +1314,10 @@ class LiftosaurPipelineStack extends cdk.Stack {
                 ? "arn:aws:secretsmanager:us-west-2:366191129585:secret:lftAppSecretsDev-RVo7cG"
                 : "arn:aws:secretsmanager:us-west-2:366191129585:secret:lftAppSecrets-cRCeI1"
             }:rollbarPostServerItem`,
+          },
+          LFT_ORIGIN_VERIFY_SECRET: {
+            type: codebuild.BuildEnvironmentVariableType.SECRETS_MANAGER,
+            value: "lftOriginVerifySecret",
           },
         },
       },
@@ -1234,6 +1347,7 @@ class LiftosaurPipelineStack extends cdk.Stack {
           "ssm:GetParameter",
           "ecr:*",
           "logs:*",
+          "wafv2:*",
         ],
         resources: ["*"],
       })
@@ -1282,8 +1396,122 @@ class LiftosaurPipelineStack extends cdk.Stack {
   }
 }
 
+class LiftosaurWafStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const webAcl = new wafv2.CfnWebACL(this, "LftWebAcl", {
+      name: "LiftosaurWebAcl",
+      scope: "CLOUDFRONT",
+      defaultAction: { allow: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        metricName: "LiftosaurWebAcl",
+        sampledRequestsEnabled: true,
+      },
+      rules: [
+        {
+          name: "BlanketRateLimit",
+          priority: 1,
+          action: { block: {} },
+          statement: { rateBasedStatement: { limit: 2000, aggregateKeyType: "IP" } },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: "BlanketRateLimit",
+            sampledRequestsEnabled: true,
+          },
+        },
+        {
+          name: "MusclesRateLimit",
+          priority: 2,
+          action: { block: {} },
+          statement: {
+            rateBasedStatement: {
+              limit: 100,
+              aggregateKeyType: "IP",
+              scopeDownStatement: {
+                byteMatchStatement: {
+                  fieldToMatch: { uriPath: {} },
+                  positionalConstraint: "STARTS_WITH",
+                  searchString: "/api/muscles",
+                  textTransformations: [{ priority: 0, type: "NONE" }],
+                },
+              },
+            },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: "MusclesRateLimit",
+            sampledRequestsEnabled: true,
+          },
+        },
+        {
+          name: "AmazonIpReputation",
+          priority: 3,
+          overrideAction: { none: {} },
+          statement: {
+            managedRuleGroupStatement: { vendorName: "AWS", name: "AWSManagedRulesAmazonIpReputationList" },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: "AmazonIpReputation",
+            sampledRequestsEnabled: true,
+          },
+        },
+      ],
+    });
+
+    new cdk.CfnOutput(this, "WafWebAclArn", {
+      value: webAcl.attrArn,
+      description: "CloudFront WebACL ARN - set PROD_WAF_WEB_ACL_ARN to this, then redeploy LiftosaurStack",
+    });
+
+    const wafAlarmTopic = new sns.Topic(this, "LftWafAlarmTopic", {
+      topicName: "LiftosaurWafAlarms",
+      displayName: "Liftosaur WAF and billing alarms",
+    });
+    wafAlarmTopic.addSubscription(new sns_subscriptions.EmailSubscription(ALARM_EMAIL));
+
+    const musclesAlarm = new cloudwatch.Alarm(this, "LftMusclesRateLimitAlarm", {
+      alarmName: "LiftosaurMusclesRateLimit",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/WAFV2",
+        metricName: "CountedRequests",
+        dimensionsMap: { WebACL: "LiftosaurWebAcl", Rule: "MusclesRateLimit", Region: "CloudFront" },
+        statistic: "Sum",
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 100,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription:
+        "An IP tripped the /api/muscles rate limit 100+ times in 5 minutes. Each uncached call is a paid Claude call.",
+    });
+    musclesAlarm.addAlarmAction(new cloudwatch_actions.SnsAction(wafAlarmTopic));
+
+    const billingAlarm = new cloudwatch.Alarm(this, "LftBillingAlarm", {
+      alarmName: "LiftosaurEstimatedCharges",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/Billing",
+        metricName: "EstimatedCharges",
+        dimensionsMap: { Currency: "USD" },
+        statistic: "Maximum",
+        period: cdk.Duration.hours(6),
+      }),
+      threshold: 1000,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: "Month-to-date AWS charges exceeded the alarm threshold.",
+    });
+    billingAlarm.addAlarmAction(new cloudwatch_actions.SnsAction(wafAlarmTopic));
+  }
+}
+
 const app = new cdk.App();
 new LiftosaurCdkStack(app, "LiftosaurStackDev", true);
 new LiftosaurCdkStack(app, "LiftosaurStack", false);
 new LiftosaurPipelineStack(app, "LiftosaurPipelineDev", true);
 new LiftosaurPipelineStack(app, "LiftosaurPipeline", false);
+new LiftosaurWafStack(app, "LiftosaurWaf", { env: { account: "366191129585", region: "us-east-1" } });

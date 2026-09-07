@@ -39,11 +39,30 @@ import {
   ApiV1_updateMeasurement,
   ApiV1_deleteMeasurement,
 } from "../utils/apiv1Measurements";
+import {
+  ApiV1_getNextWorkout,
+  ApiV1_startWorkout,
+  ApiV1_getCurrentWorkout,
+  ApiV1_writeSets,
+  ApiV1_finishWorkout,
+  ApiV1_discardWorkout,
+  ApiV1_getWorkoutSettings,
+  IApiWorkoutContext,
+} from "../utils/apiv1Workout";
 import { EventDao } from "../dao/eventDao";
 
 interface IPayload {
   event: APIGatewayProxyEvent;
   di: IDI;
+}
+
+function getWorkoutContext(event: APIGatewayProxyEvent): IApiWorkoutContext {
+  const headers = event.headers || {};
+  const header = (name: string): string | undefined => headers[name] ?? headers[name.toLowerCase()];
+  return {
+    client: header("X-Liftosaur-Client"),
+    deviceId: header("X-Liftosaur-Device-Id"),
+  };
 }
 
 function getBodyJson(event: APIGatewayProxyEvent): Record<string, unknown> {
@@ -116,7 +135,10 @@ export const postV1HistoryHandler: RouteHandler<
     if (!body.text) {
       return apiError(400, "invalid_input", "Missing 'text' field");
     }
-    return resultToResponse(await ApiV1_createHistory(auth.userId, auth.user, body.text as string, di), 201);
+    return resultToResponse(
+      await ApiV1_createHistory(auth.userId, auth.user, body.text as string, auth.deviceId, di),
+      201
+    );
   });
 };
 
@@ -132,7 +154,7 @@ export const putV1HistoryHandler: RouteHandler<IPayload, APIGatewayProxyResult, 
       return apiError(400, "invalid_input", "Missing 'text' field");
     }
     return resultToResponse(
-      await ApiV1_updateHistory(auth.userId, auth.user, parseInt(params.id, 10), body.text as string, di)
+      await ApiV1_updateHistory(auth.userId, auth.user, parseInt(params.id, 10), body.text as string, auth.deviceId, di)
     );
   });
 };
@@ -145,7 +167,9 @@ export const deleteV1HistoryHandler: RouteHandler<
 > = async ({ payload, match: { params } }) => {
   const { event, di } = payload;
   return withApiAuthAndEvent(event, di, "api-v1-delete-history", async (auth) => {
-    return resultToResponse(await ApiV1_deleteHistory(auth.userId, auth.user, parseInt(params.id, 10), di));
+    return resultToResponse(
+      await ApiV1_deleteHistory(auth.userId, auth.user, parseInt(params.id, 10), auth.deviceId, di)
+    );
   });
 };
 
@@ -192,6 +216,7 @@ export const postV1ProgramHandler: RouteHandler<
         auth.user,
         (body.name as string) || "New Program",
         body.text as string,
+        auth.deviceId,
         di
       ),
       201
@@ -217,6 +242,7 @@ export const putV1ProgramHandler: RouteHandler<IPayload, APIGatewayProxyResult, 
         params.id,
         body.text as string,
         body.name as string | undefined,
+        auth.deviceId,
         di
       )
     );
@@ -231,7 +257,7 @@ export const deleteV1ProgramHandler: RouteHandler<
 > = async ({ payload, match: { params } }) => {
   const { event, di } = payload;
   return withApiAuthAndEvent(event, di, "api-v1-delete-program", async (auth) => {
-    return resultToResponse(await ApiV1_deleteProgram(auth.userId, auth.user, params.id, di));
+    return resultToResponse(await ApiV1_deleteProgram(auth.userId, auth.user, params.id, auth.deviceId, di));
   });
 };
 
@@ -300,7 +326,7 @@ export const postV1GymHandler: RouteHandler<IPayload, APIGatewayProxyResult, typ
     if (!body.name) {
       return apiError(400, "invalid_input", "Missing 'name' field");
     }
-    return resultToResponse(await ApiV1_createGym(auth.userId, auth.user, body.name as string, di), 201);
+    return resultToResponse(await ApiV1_createGym(auth.userId, auth.user, body.name as string, auth.deviceId, di), 201);
   });
 };
 
@@ -312,7 +338,7 @@ export const putV1GymHandler: RouteHandler<IPayload, APIGatewayProxyResult, type
   const { event, di } = payload;
   return withApiAuthAndEvent(event, di, "api-v1-update-gym", async (auth) => {
     const body = getBodyJson(event);
-    return resultToResponse(await ApiV1_updateGym(auth.userId, auth.user, params.id, body, di));
+    return resultToResponse(await ApiV1_updateGym(auth.userId, auth.user, params.id, body, auth.deviceId, di));
   });
 };
 
@@ -323,7 +349,7 @@ export const deleteV1GymHandler: RouteHandler<IPayload, APIGatewayProxyResult, t
 }) => {
   const { event, di } = payload;
   return withApiAuthAndEvent(event, di, "api-v1-delete-gym", async (auth) => {
-    return resultToResponse(await ApiV1_deleteGym(auth.userId, auth.user, params.id, di));
+    return resultToResponse(await ApiV1_deleteGym(auth.userId, auth.user, params.id, auth.deviceId, di));
   });
 };
 
@@ -366,7 +392,15 @@ export const postV1EquipmentHandler: RouteHandler<
       return apiError(400, "invalid_input", "Missing 'name' field");
     }
     return resultToResponse(
-      await ApiV1_createCustomEquipment(auth.userId, auth.user, params.gymId, body.name as string, body, di),
+      await ApiV1_createCustomEquipment(
+        auth.userId,
+        auth.user,
+        params.gymId,
+        body.name as string,
+        body,
+        auth.deviceId,
+        di
+      ),
       201
     );
   });
@@ -381,7 +415,9 @@ export const putV1EquipmentHandler: RouteHandler<
   const { event, di } = payload;
   return withApiAuthAndEvent(event, di, "api-v1-update-equipment", async (auth) => {
     const body = getBodyJson(event);
-    return resultToResponse(await ApiV1_updateEquipment(auth.userId, auth.user, params.gymId, params.id, body, di));
+    return resultToResponse(
+      await ApiV1_updateEquipment(auth.userId, auth.user, params.gymId, params.id, body, auth.deviceId, di)
+    );
   });
 };
 
@@ -420,7 +456,7 @@ export const putV1ExerciseDataHandler: RouteHandler<
   const { event, di } = payload;
   return withApiAuthAndEvent(event, di, "api-v1-set-exercise-data", async (auth) => {
     const body = getBodyJson(event);
-    return resultToResponse(await ApiV1_setExerciseData(auth.userId, auth.user, params.key, body, di));
+    return resultToResponse(await ApiV1_setExerciseData(auth.userId, auth.user, params.key, body, auth.deviceId, di));
   });
 };
 
@@ -432,7 +468,7 @@ export const deleteV1ExerciseDataHandler: RouteHandler<
 > = async ({ payload, match: { params } }) => {
   const { event, di } = payload;
   return withApiAuthAndEvent(event, di, "api-v1-delete-exercise-data", async (auth) => {
-    return resultToResponse(await ApiV1_deleteExerciseData(auth.userId, auth.user, params.key, di));
+    return resultToResponse(await ApiV1_deleteExerciseData(auth.userId, auth.user, params.key, auth.deviceId, di));
   });
 };
 
@@ -462,7 +498,14 @@ export const getV1MeasurementHandler: RouteHandler<
   const { event, di } = payload;
   return withApiAuthAndEvent(event, di, "api-v1-get-measurement", async (auth) => {
     return resultToResponse(
-      await ApiV1_getMeasurement(auth.userId, auth.user, params.key, { limit: params.limit, cursor: params.cursor }, di)
+      await ApiV1_getMeasurement(
+        auth.userId,
+        auth.user,
+        params.key,
+        { limit: params.limit, cursor: params.cursor },
+        auth.deviceId,
+        di
+      )
     );
   });
 };
@@ -482,6 +525,7 @@ export const postV1MeasurementHandler: RouteHandler<
         auth.user,
         params.key,
         { value: body.value, timestamp: body.timestamp },
+        auth.deviceId,
         di
       ),
       201
@@ -499,7 +543,15 @@ export const putV1MeasurementHandler: RouteHandler<
   return withApiAuthAndEvent(event, di, "api-v1-update-measurement", async (auth) => {
     const body = getBodyJson(event);
     return resultToResponse(
-      await ApiV1_updateMeasurement(auth.userId, auth.user, params.key, params.timestamp, { value: body.value }, di)
+      await ApiV1_updateMeasurement(
+        auth.userId,
+        auth.user,
+        params.key,
+        params.timestamp,
+        { value: body.value },
+        auth.deviceId,
+        di
+      )
     );
   });
 };
@@ -512,6 +564,119 @@ export const deleteV1MeasurementHandler: RouteHandler<
 > = async ({ payload, match: { params } }) => {
   const { event, di } = payload;
   return withApiAuthAndEvent(event, di, "api-v1-delete-measurement", async (auth) => {
-    return resultToResponse(await ApiV1_deleteMeasurement(auth.userId, auth.user, params.key, params.timestamp, di));
+    return resultToResponse(
+      await ApiV1_deleteMeasurement(auth.userId, auth.user, params.key, params.timestamp, auth.deviceId, di)
+    );
+  });
+};
+
+export const getV1WorkoutNextEndpoint = Endpoint.build("/api/v1/workout/next", {
+  programId: "string?",
+  week: "string?",
+  dayInWeek: "string?",
+});
+export const getV1WorkoutNextHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1WorkoutNextEndpoint
+> = async ({ payload, match: { params } }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-workout-next", async (auth) => {
+    return resultToResponse(await ApiV1_getNextWorkout(auth.userId, auth.user, params, di));
+  });
+};
+
+export const postV1WorkoutStartEndpoint = Endpoint.build("/api/v1/workout/start");
+export const postV1WorkoutStartHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1WorkoutStartEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-start-workout", async (auth) => {
+    return resultToResponse(
+      await ApiV1_startWorkout(auth.userId, auth.user, getBodyJson(event), getWorkoutContext(event), di)
+    );
+  });
+};
+
+export const getV1WorkoutCurrentEndpoint = Endpoint.build("/api/v1/workout/current");
+export const getV1WorkoutCurrentHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1WorkoutCurrentEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-workout-current", async (auth) => {
+    return resultToResponse(await ApiV1_getCurrentWorkout(auth.userId, auth.user, di));
+  });
+};
+
+export const deleteV1WorkoutCurrentEndpoint = Endpoint.build("/api/v1/workout/current");
+export const deleteV1WorkoutCurrentHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof deleteV1WorkoutCurrentEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-discard-workout", async (auth) => {
+    return resultToResponse(
+      await ApiV1_discardWorkout(auth.userId, auth.user, getBodyJson(event), getWorkoutContext(event), di)
+    );
+  });
+};
+
+// A single-set write is a batch of one, so both endpoints share a code path.
+export const postV1WorkoutSetEndpoint = Endpoint.build("/api/v1/workout/set");
+export const postV1WorkoutSetHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1WorkoutSetEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-write-workout-set", async (auth) => {
+    return resultToResponse(
+      await ApiV1_writeSets(auth.userId, auth.user, { sets: [getBodyJson(event)] }, getWorkoutContext(event), di)
+    );
+  });
+};
+
+export const postV1WorkoutSetsEndpoint = Endpoint.build("/api/v1/workout/sets");
+export const postV1WorkoutSetsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1WorkoutSetsEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-write-workout-sets", async (auth) => {
+    return resultToResponse(
+      await ApiV1_writeSets(auth.userId, auth.user, getBodyJson(event), getWorkoutContext(event), di)
+    );
+  });
+};
+
+export const postV1WorkoutFinishEndpoint = Endpoint.build("/api/v1/workout/finish");
+export const postV1WorkoutFinishHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof postV1WorkoutFinishEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-finish-workout", async (auth) => {
+    return resultToResponse(
+      await ApiV1_finishWorkout(auth.userId, auth.user, getBodyJson(event), getWorkoutContext(event), di)
+    );
+  });
+};
+
+export const getV1SettingsEndpoint = Endpoint.build("/api/v1/settings");
+export const getV1SettingsHandler: RouteHandler<
+  IPayload,
+  APIGatewayProxyResult,
+  typeof getV1SettingsEndpoint
+> = async ({ payload }) => {
+  const { event, di } = payload;
+  return withApiAuthAndEvent(event, di, "api-v1-get-settings", async (auth) => {
+    return resultToResponse(ApiV1_getWorkoutSettings(auth.user));
   });
 };

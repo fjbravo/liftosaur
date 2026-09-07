@@ -117,10 +117,6 @@ module.exports = {
       __API_HOST__: JSON.stringify(
         process.env.LIFTOSAUR_API_HOST || (isStage ? "https://api3-dev.liftosaur.com" : "https://api3.liftosaur.com")
       ),
-      __STREAMING_API_HOST__: JSON.stringify(
-        process.env.LIFTOSAUR_STREAMING_API_HOST ||
-          (isStage ? "https://streaming-api-dev.liftosaur.com" : "https://streaming-api.liftosaur.com")
-      ),
     }),
   ],
   optimization: {

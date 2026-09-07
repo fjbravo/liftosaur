@@ -15,7 +15,7 @@ import { UidFactory_generateUid } from "./utils/generator";
 import { Utils_getEnv, Utils_isLocal, Utils_isSelfHosted } from "./utils";
 import { ApplePromotionalOfferSigner } from "./utils/applePromotionalOfferSigner";
 import rsaPemFromModExp from "rsa-pem-from-mod-exp";
-import { IPartialStorage, IStorage } from "../src/types";
+import { IPartialStorage, IStorage, VDeletedExerciseDataKeys, VProgramContentSettings } from "../src/types";
 import { ProgramDao } from "./dao/programDao";
 import { renderRecordHtml, recordImage } from "./record";
 import { LogDao } from "./dao/logDao";
@@ -91,13 +91,17 @@ import { ExceptionDao } from "./dao/exceptionDao";
 import { UrlUtils_build, UrlUtils_buildSafe } from "../src/utils/url";
 import { RollbarUtils_checkIgnore } from "../src/utils/rollbar";
 import { IAccount, Account_getFromStorage } from "../src/models/account";
-import { Storage_get, Storage_updateVersions } from "../src/models/storage";
+import { Storage_get, Storage_updateVersions, Storage_validate } from "../src/models/storage";
+import {
+  VersionTrackerUtils_SERVER_DEVICE_ID,
+  VersionTrackerUtils_UNIDENTIFIED_DEVICE_ID,
+} from "../src/models/versionTracker/utils";
 import { renderProgramsListHtml } from "./programsList";
 import { renderMainHtml } from "./main";
 import { getUserImagesPrefix, LftS3Buckets } from "./dao/buckets";
 import { IStorageUpdate, IStorageUpdate2 } from "../src/utils/sync";
 import { IEventPayload, IPostSyncResponse } from "../src/api/service";
-import { Settings_applyExportedProgram } from "../src/models/settings";
+import { Settings_applyExportedProgram, Settings_applyWebEditorSettings } from "../src/models/settings";
 import { PlannerProgram_generateFullText } from "../src/pages/planner/models/plannerProgram";
 import { renderLoginHtml } from "./login";
 import { ExerciseImageUtils_exists } from "../src/models/exerciseImage";
@@ -122,8 +126,6 @@ import {
 } from "./paymentsDashboard";
 import { computePaymentsSummary } from "../src/pages/paymentsDashboard/paymentsDashboardContent";
 import { IExportedPlannerProgram } from "../src/pages/planner/models/types";
-import { UrlContentFetcher } from "./utils/urlContentFetcher";
-import { LlmPrompt_getSystemPrompt, LlmPrompt_getUserPrompt } from "./utils/llms/llmPrompt";
 import {
   getV1HistoryEndpoint,
   getV1HistoryHandler,
@@ -181,6 +183,22 @@ import {
   putV1MeasurementHandler,
   deleteV1MeasurementEndpoint,
   deleteV1MeasurementHandler,
+  getV1WorkoutNextEndpoint,
+  getV1WorkoutNextHandler,
+  postV1WorkoutStartEndpoint,
+  postV1WorkoutStartHandler,
+  getV1WorkoutCurrentEndpoint,
+  getV1WorkoutCurrentHandler,
+  deleteV1WorkoutCurrentEndpoint,
+  deleteV1WorkoutCurrentHandler,
+  postV1WorkoutSetEndpoint,
+  postV1WorkoutSetHandler,
+  postV1WorkoutSetsEndpoint,
+  postV1WorkoutSetsHandler,
+  postV1WorkoutFinishEndpoint,
+  postV1WorkoutFinishHandler,
+  getV1SettingsEndpoint,
+  getV1SettingsHandler,
 } from "./api/v1";
 import {
   getMcpEndpoint,
@@ -199,10 +217,11 @@ import {
   postOauthRegisterHandler,
   getOauthAuthorizeEndpoint,
   getOauthAuthorizeHandler,
+  postOauthAuthorizeEndpoint,
+  postOauthAuthorizeHandler,
   postOauthTokenEndpoint,
   postOauthTokenHandler,
 } from "./mcp/oauth";
-import { AiLogsDao } from "./dao/aiLogsDao";
 import { ICollectionVersions } from "../src/models/versionTracker";
 import { ObjectUtils_values, ObjectUtils_keys } from "../src/utils/object";
 import { Llm_buildProvider } from "./utils/llms/llmProviderFactory";
@@ -441,8 +460,6 @@ const postAppleWebhookHandler: RouteHandler<IPayload, APIGatewayProxyResult, typ
 }) => {
   const { event, di } = payload;
   const body = event.body;
-  di.log.log("Received body", body);
-
   const appleWebhookHandler = new AppleWebhookHandler(di);
   const result = await appleWebhookHandler.handleWebhook(body);
 
@@ -462,7 +479,6 @@ const postGoogleWebhookHandler: RouteHandler<
   const { event, di } = payload;
   const handler = new GoogleWebhookHandler(di);
   const authorizationHeader = event.headers?.authorization || event.headers?.Authorization;
-  di.log.log("Received headers", event.headers);
   const result = await handler.handleWebhook(event.body || "", authorizationHeader);
 
   return ResponseUtils_json(200, event, { status: result.success ? "ok" : "error", message: result.message });
@@ -545,7 +561,11 @@ const postSync2Handler: RouteHandler<IPayload, APIGatewayProxyResult, typeof pos
   } else {
     bodyJson = rawBodyJson;
   }
-  const deviceId = bodyJson.deviceId as string | undefined;
+  const rawDeviceId = bodyJson.deviceId as string | undefined;
+  if (!rawDeviceId) {
+    di.log.log("sync2: request without a device id, falling back to the shared unidentified node");
+  }
+  const deviceId = rawDeviceId || VersionTrackerUtils_UNIDENTIFIED_DEVICE_ID;
   const timestamp: number = (bodyJson.timestamp as number) || Date.now();
   const storageUpdate = bodyJson.storageUpdate as IStorageUpdate2;
   const historylimit = bodyJson.historylimit as number | undefined;
@@ -567,7 +587,6 @@ const postSync2Handler: RouteHandler<IPayload, APIGatewayProxyResult, typeof pos
       di.log.log(`Server oid: ${limitedUser.storage.originalId}, update oid: ${storageUpdate.originalId}`);
       if (storageUpdate.originalId != null && limitedUser.storage.originalId === storageUpdate.originalId) {
         di.log.log("Fetch: Safe update");
-        di.log.log(JSON.stringify(storageUpdate, null, 2));
         const result = await userDao.applySafeSync2(limitedUser, storageUpdate, deviceId);
         if (result.success) {
           di.log.log("New original id", result.data.originalId);
@@ -600,7 +619,6 @@ const postSync2Handler: RouteHandler<IPayload, APIGatewayProxyResult, typeof pos
         }
       } else {
         di.log.log("Fetch: Merging update");
-        di.log.log(JSON.stringify(storageUpdate, null, 2));
         storageUpdate.originalId = Date.now();
         const result = await userDao.applySafeSync2(limitedUser, storageUpdate, deviceId);
         if (result.success) {
@@ -698,10 +716,8 @@ const postSyncHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof post
       storageUpdate.tempUserId = userId;
       if (storageUpdate.originalId != null && limitedUser.storage.originalId === storageUpdate.originalId) {
         di.log.log("Fetch: Safe update");
-        di.log.log(storageUpdate);
         const result = await userDao.applySafeSync(limitedUser, storageUpdate);
         if (result.success) {
-          di.log.log("New original id", result.data);
           const [storageId] = await Promise.all([
             storageDao.store(limitedUser.id, result.data.newStorage, undefined),
             userDao.maybeSaveProgramRevision(limitedUser.id, storageUpdate),
@@ -731,7 +747,6 @@ const postSyncHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof post
         }
       } else {
         di.log.log("Fetch: Merging update");
-        di.log.log(storageUpdate);
         storageUpdate.originalId = Date.now();
         const result = await userDao.applySafeSync(limitedUser, storageUpdate);
         if (result.success) {
@@ -843,6 +858,10 @@ const saveDebugHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof sav
 }) => {
   const { event, di } = payload;
   const { id, data } = getBodyJson(event);
+  const idStr = typeof id === "number" ? `${id}` : id;
+  if (typeof idStr !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(idStr)) {
+    return ResponseUtils_json(400, event, { error: "Invalid id" });
+  }
   const debugDao = new DebugDao(di);
   let debugData: string;
   if (typeof data === "string") {
@@ -850,7 +869,7 @@ const saveDebugHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof sav
   } else {
     debugData = JSON.stringify(data);
   }
-  await debugDao.store(id, debugData);
+  await debugDao.store(idStr, debugData);
   return ResponseUtils_json(200, event, { data: "ok" });
 };
 
@@ -1646,7 +1665,11 @@ const postSaveProgramHandler: RouteHandler<IPayload, APIGatewayProxyResult, type
       originalId: Date.now(),
     };
     di.log.log("Device id", deviceId);
-    const newVersions = Storage_updateVersions(oldStorage, newStorage, deviceId);
+    const newVersions = Storage_updateVersions(
+      oldStorage,
+      newStorage,
+      deviceId || VersionTrackerUtils_SERVER_DEVICE_ID
+    );
     const saveVersions = eventDao.post({
       type: "event",
       name: "save-program-www-versions",
@@ -1710,6 +1733,53 @@ const postSaveProgramHandler: RouteHandler<IPayload, APIGatewayProxyResult, type
     return ResponseUtils_json(200, event, { data: { id: exportedProgram.program.id } });
   }
   return ResponseUtils_json(400, event, { error: "Not Authorized" });
+};
+
+const postSaveSettingsEndpoint = Endpoint.build("/api/settings");
+const postSaveSettingsHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postSaveSettingsEndpoint> = async ({
+  payload,
+}) => {
+  const { event, di } = payload;
+  const user = await getCurrentLimitedUser(event, di);
+  if (user == null) {
+    return ResponseUtils_json(400, event, { error: "Not Authorized" });
+  }
+  const bodyJson = getBodyJson(event);
+  const deviceId = bodyJson.deviceId as string | undefined;
+  const version = bodyJson.version as string | undefined;
+  const updateResult = Storage_validate(bodyJson.settings, VProgramContentSettings, "settings");
+  if (!updateResult.success) {
+    di.log.log("Settings Save: Invalid payload", updateResult.error);
+    return ResponseUtils_json(400, event, { error: "Invalid settings" });
+  }
+  const deletedKeysResult = Storage_validate(
+    bodyJson.deletedExerciseDataKeys ?? [],
+    VDeletedExerciseDataKeys,
+    "deletedExerciseDataKeys"
+  );
+  if (!deletedKeysResult.success) {
+    di.log.log("Settings Save: Invalid deleted keys", deletedKeysResult.error);
+    return ResponseUtils_json(400, event, { error: "Invalid settings" });
+  }
+  const oldStorageResult = Storage_get(user.storage);
+  if (!oldStorageResult.success) {
+    di.log.log("Settings Save: Error loading old storage", oldStorageResult.error);
+    return ResponseUtils_json(500, event, { error: "Corrupted storage!" });
+  }
+  if (version != null && oldStorageResult.data.version !== version) {
+    di.log.log(`Settings Save: Version mismatch! Old: ${oldStorageResult.data.version}, New: ${version}.`);
+    return ResponseUtils_json(400, event, { error: "Version mismatch! Please refresh the page." });
+  }
+  const userDao = new UserDao(di);
+  await userDao.applyStorageUpdate(
+    user,
+    (old) => ({
+      ...old,
+      settings: Settings_applyWebEditorSettings(old.settings, updateResult.data, deletedKeysResult.data),
+    }),
+    deviceId || VersionTrackerUtils_SERVER_DEVICE_ID
+  );
+  return ResponseUtils_json(200, event, { data: {} });
 };
 
 const deleteProgramEndpoint = Endpoint.build("/api/program/:id");
@@ -3149,7 +3219,7 @@ const getMusclesForExerciseHandler: RouteHandler<
     di.log.log("Missed cached response for muscles for exercise:", exerciseName);
     const anthropicKey = await di.secrets.getAnthropicKey();
     const llmProvider = Llm_buildProvider(anthropicKey);
-    const llmMuscles = new LlmMuscles(di, llmProvider, userId);
+    const llmMuscles = new LlmMuscles(di, llmProvider);
     const muscleGenerator = new MuscleGenerator(di, llmMuscles);
     const musclesResponse = await muscleGenerator.generateMuscles(match.params.exercise);
     di.log.log("Generated muscles response for ", exerciseName, musclesResponse);
@@ -3164,81 +3234,6 @@ const getMusclesForExerciseHandler: RouteHandler<
       });
       return ResponseUtils_json(500, payload.event, { error: "Failed to generate muscles" });
     }
-  }
-};
-
-// const getAiEndpoint = Endpoint.build("/ai");
-// const getAiHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof getAiEndpoint> = async ({
-//   payload,
-//   match,
-// }) => {
-//   const di = payload.di;
-//   const userResult = await getUserAccount(payload);
-//   if (!userResult.success) {
-//     return userResult.error;
-//   } else {
-//     const account = userResult.data.account;
-//     return {
-//       statusCode: 200,
-//       body: renderAiHtml(di.fetch, account),
-//       headers: { "content-type": "text/html" },
-//     };
-//   }
-// };
-
-const postAiPromptEndpoint = Endpoint.build("/api/ai/prompt");
-const postAiPromptHandler: RouteHandler<IPayload, APIGatewayProxyResult, typeof postAiPromptEndpoint> = async ({
-  payload,
-}) => {
-  const { event, di } = payload;
-  const { input } = getBodyJson(event);
-
-  if (!input) {
-    return ResponseUtils_json(400, event, { error: "Input is required" });
-  }
-
-  try {
-    const urlFetcher = new UrlContentFetcher(di);
-    let content = input;
-
-    const userId = await getCurrentUserId(event, di);
-    try {
-      const aiLogsDao = new AiLogsDao(di);
-      await aiLogsDao.create({
-        userId: userId || "anonymous",
-        input,
-        timestamp: Date.now(),
-      });
-    } catch (err) {
-      di.log.log("Failed to log prompt:", err);
-    }
-
-    // If it's a URL, fetch the content
-    if (urlFetcher.isUrl(input)) {
-      const fetched = await urlFetcher.fetchUrlContent(input);
-      content = fetched.content;
-
-      if (fetched.type === "csv") {
-        if (content.includes("with Formulas:")) {
-          content = `[This is Google Sheets data with formulas. Cells show both formulas (e.g., =B2*0.8) and their calculated values. Use the formulas to understand the program structure and progressions]:\n\n${content}`;
-        } else {
-          content = `[This is CSV data from a spreadsheet]:\n\n${content}`;
-        }
-      } else if (fetched.type === "html") {
-        const markdownContent = urlFetcher.convertHtmlToMarkdown(content);
-        content = `[This content was extracted from a webpage and converted to Markdown format. Tables are preserved in HTML format between [TABLE] tags. Extract the workout program information]:\n\n${markdownContent}`;
-      }
-    }
-
-    // Generate the full prompt
-    const systemPrompt = LlmPrompt_getSystemPrompt();
-    const userPrompt = LlmPrompt_getUserPrompt(content);
-    const fullPrompt = `${systemPrompt}\n\n---\n\n${userPrompt}`;
-
-    return ResponseUtils_json(200, event, { prompt: fullPrompt });
-  } catch (error) {
-    di.log.log("Error generating prompt:", error);
-    return ResponseUtils_json(400, event, { error: `Failed to generate prompt: ${error}` });
   }
 };
 
@@ -3281,8 +3276,22 @@ const postImageUploadUrlHandler: RouteHandler<
     return ResponseUtils_json(400, event, { error: "fileName and contentType are required" });
   }
 
+  // These images are served from the app origin, so the presigned Content-Type (S3 signs and enforces
+  // it) must never be something a browser would execute - no text/html, and no image/svg+xml, which
+  // can carry script. The app only ever uploads the raster types below.
+  const allowedContentTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+  if (!allowedContentTypes.includes(contentType)) {
+    return ResponseUtils_json(400, event, { error: "Unsupported content type" });
+  }
+
   try {
-    const key = `user-uploads/${userId}/${UidFactory_generateUid(8)}-${fileName}`;
+    const safeFileName =
+      `${fileName}`
+        .split("/")
+        .pop()!
+        .replace(/[^a-zA-Z0-9._-]/g, "_")
+        .slice(-64) || "image";
+    const key = `user-uploads/${userId}/${UidFactory_generateUid(8)}-${safeFileName}`;
     const env = Utils_getEnv();
     const bucketname = `${LftS3Buckets.userimages}${env === "dev" ? "dev" : ""}`;
     const uploadUrl = await di.s3.getPresignedUploadUrl({
@@ -3409,6 +3418,10 @@ const postStoreExceptionDataHandler: RouteHandler<
   const { di, event } = payload;
   const bodyJson = getBodyJson(event);
   const { id, data } = bodyJson;
+  const idStr = typeof id === "number" ? `${id}` : id;
+  if (typeof idStr !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(idStr)) {
+    return ResponseUtils_json(400, event, { error: "Invalid id" });
+  }
   const exceptionDao = new ExceptionDao(di);
   let exceptionData: string;
   if (typeof data === "string") {
@@ -3416,17 +3429,22 @@ const postStoreExceptionDataHandler: RouteHandler<
   } else {
     exceptionData = JSON.stringify(data);
   }
-  await exceptionDao.store(id, exceptionData);
+  await exceptionDao.store(idStr, exceptionData);
   return ResponseUtils_json(200, event, { data: { id } });
 };
 
-const getStoreExceptionDataEndpoint = Endpoint.build("/api/exception/:id");
+const getStoreExceptionDataEndpoint = Endpoint.build("/api/exception/:id", { key: "string" });
 const getStoreExceptionDataHandler: RouteHandler<
   IPayload,
   APIGatewayProxyResult,
   typeof getStoreExceptionDataEndpoint
 > = async ({ payload, match: { params } }) => {
   const { di, event } = payload;
+  // The dump contains full user storage, so this admin-only debug read must not be reachable by id
+  // alone. The anonymous write path (POST /api/exception) stays open for crash reports.
+  if (params.key !== (await di.secrets.getApiKey())) {
+    return ResponseUtils_json(401, event, { error: "Invalid admin key" });
+  }
   const id = params.id;
   const env = Utils_getEnv();
   const bucket = env === "dev" ? `${LftS3Buckets.exceptions}dev` : LftS3Buckets.exceptions;
@@ -3828,13 +3846,12 @@ export const getRawHandler = (diBuilder: () => IDI): IHandler => {
     di.log.id = UidFactory_generateUid(4);
     const time = Date.now();
     const userid = await getCurrentUserId(event, di);
+    // Lambda containers are reused across users, so anything Rollbar accumulated in telemetry during
+    // a previous invocation would otherwise ride along on this user's error report.
     // @ts-ignore
     if (rollbar?.client?.telemeter?.queue) {
       // @ts-ignore
       rollbar.client.telemeter.queue = [];
-    }
-    if (rollbar) {
-      di.log.setRollbar(rollbar);
     }
     if (userid) {
       di.log.setUser(userid);
@@ -3871,6 +3888,7 @@ export const getRawHandler = (diBuilder: () => IDI): IHandler => {
       .get(getDashboardsAffiliatesEndpoint, getDashboardsAffiliatesHandler)
       .get(getLoginEndpoint, getLoginHandler)
       .post(postSaveProgramEndpoint, postSaveProgramHandler)
+      .post(postSaveSettingsEndpoint, postSaveSettingsHandler)
       .get(getDashboardsUsersEndpoint, getDashboardsUsersHandler)
       .get(getAffiliatesEndpoint, getAffiliatesHandler)
       .get(getAiPromptEndpoint, getAiPromptHandler)
@@ -3878,7 +3896,6 @@ export const getRawHandler = (diBuilder: () => IDI): IHandler => {
       .get(getAdminCheckEndpoint, getAdminCheckHandler)
       .post(postAddFreeUserEndpoint, postAddFreeUserHandler)
       .post(postClaimFreeUserEndpoint, postClaimFreeUserHandler)
-      .post(postAiPromptEndpoint, postAiPromptHandler)
       .post(postImageUploadUrlEndpoint, postImageUploadUrlHandler)
       .post(postSyncEndpoint, postSyncHandler)
       .post(postSync2Endpoint, postSync2Handler)
@@ -3974,6 +3991,14 @@ export const getRawHandler = (diBuilder: () => IDI): IHandler => {
       .post(postV1MeasurementEndpoint, postV1MeasurementHandler)
       .put(putV1MeasurementEndpoint, putV1MeasurementHandler)
       .delete(deleteV1MeasurementEndpoint, deleteV1MeasurementHandler)
+      .get(getV1WorkoutNextEndpoint, getV1WorkoutNextHandler)
+      .post(postV1WorkoutStartEndpoint, postV1WorkoutStartHandler)
+      .get(getV1WorkoutCurrentEndpoint, getV1WorkoutCurrentHandler)
+      .delete(deleteV1WorkoutCurrentEndpoint, deleteV1WorkoutCurrentHandler)
+      .post(postV1WorkoutSetEndpoint, postV1WorkoutSetHandler)
+      .post(postV1WorkoutSetsEndpoint, postV1WorkoutSetsHandler)
+      .post(postV1WorkoutFinishEndpoint, postV1WorkoutFinishHandler)
+      .get(getV1SettingsEndpoint, getV1SettingsHandler)
       .get(getMcpEndpoint, getMcpHandler)
       .delete(deleteMcpEndpoint, deleteMcpHandler)
       .post(postMcpEndpoint, postMcpHandler)
@@ -3981,6 +4006,7 @@ export const getRawHandler = (diBuilder: () => IDI): IHandler => {
       .get(getAuthServerMetadataEndpoint, getAuthServerMetadataHandler)
       .post(postOauthRegisterEndpoint, postOauthRegisterHandler)
       .get(getOauthAuthorizeEndpoint, getOauthAuthorizeHandler)
+      .post(postOauthAuthorizeEndpoint, postOauthAuthorizeHandler)
       .post(postOauthTokenEndpoint, postOauthTokenHandler);
     r = repmaxpairswords.reduce((memo, [endpoint, handler]) => memo.get(endpoint, handler), r);
     r = repmaxpairnums.reduce((memo, [endpoint, handler]) => memo.get(endpoint, handler), r);

@@ -1,15 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import http from "http";
 import { getHandler } from "../lambda/index";
-import { getStreamingHandler } from "../lambda/streamingHandler";
 import { getImageResizerHandler } from "../lambda/imageResizer";
-import {
-  APIGatewayProxyEvent,
-  APIGatewayProxyEventHeaders,
-  APIGatewayProxyResult,
-  APIGatewayProxyEventV2,
-  S3EventRecord,
-} from "aws-lambda";
+import { APIGatewayProxyEvent, APIGatewayProxyEventHeaders, APIGatewayProxyResult, S3EventRecord } from "aws-lambda";
 import { URL } from "url";
 import { buildSelfHostedDi } from "./di";
 import { LogUtil } from "../lambda/utils/log";
@@ -26,15 +19,7 @@ declare global {
   }
 }
 
-// The AWS runtime injects `awslambda` globally; outside Lambda the streaming handler needs a passthrough stub.
-(global as any).awslambda = {
-  streamifyResponse: (handler: Function) => {
-    return handler;
-  },
-};
-
 const port = parseInt(process.env.PORT || "3000", 10);
-const streamingPort = parseInt(process.env.STREAMING_PORT || "3001", 10);
 const minioEventPaths = ["/selfhosted/minio-events", "/api/minio-resize-webhook"];
 
 if (!process.env.HOST) {
@@ -172,98 +157,13 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-const streamingHandler = getStreamingHandler(() => buildSelfHostedDi(new LogUtil(), fetch));
-
-const streamingServer = http.createServer(async (req, res) => {
-  try {
-    const url = new URL(req.url || "", "http://www.example.com");
-
-    const body = req.method === "OPTIONS" ? "" : await getBody(req);
-    const streamingEvent: APIGatewayProxyEventV2 = {
-      version: "2.0",
-      routeKey: "$default",
-      rawPath: url.pathname,
-      rawQueryString: url.search.substring(1),
-      headers: req.headers as { [key: string]: string },
-      requestContext: {
-        accountId: "123456789012",
-        apiId: "selfhosted",
-        domainName: req.headers.host || "localhost",
-        domainPrefix: "selfhosted",
-        http: {
-          method: req.method || "POST",
-          path: url.pathname,
-          protocol: "HTTP/1.1",
-          sourceIp: req.socket.remoteAddress || "127.0.0.1",
-          userAgent: req.headers["user-agent"] || "",
-        },
-        requestId: "selfhosted-" + Date.now(),
-        time: new Date().toISOString(),
-        timeEpoch: Date.now(),
-        routeKey: "",
-        stage: "",
-      },
-      body,
-      isBase64Encoded: false,
-    };
-
-    const responseStream = {
-      write: (chunk: unknown) => {
-        if (typeof chunk === "string") {
-          // The first write is the response metadata that Lambda's streaming runtime would consume.
-          if (chunk.startsWith("{") && chunk.includes("statusCode")) {
-            try {
-              const metadata = JSON.parse(chunk);
-              res.statusCode = metadata.statusCode;
-              for (const [key, value] of Object.entries(metadata.headers || {})) {
-                res.setHeader(key, value as string);
-              }
-              return;
-            } catch (e) {}
-          }
-          res.write(chunk);
-        } else {
-          res.write(chunk);
-        }
-      },
-      end: () => {
-        res.end();
-      },
-    };
-
-    await streamingHandler(streamingEvent, responseStream, () => undefined);
-    return;
-  } catch (e) {
-    if (e instanceof Error) {
-      console.error(e);
-      res.statusCode = 500;
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ name: e.name, error: e.message }));
-    } else {
-      throw e;
-    }
-  }
-});
-
 server.listen(port, "0.0.0.0", () => {
   console.log(`--------- API Server is running on port ${port} ----------`);
 });
 
-streamingServer.listen(streamingPort, "0.0.0.0", () => {
-  console.log(`--------- Streaming API Server is running on port ${streamingPort} ----------`);
-});
-
 function shutdown(signal: string): void {
   console.log(`Received ${signal}, shutting down`);
-  let pending = 2;
-  const onClose = (): void => {
-    pending -= 1;
-    if (pending === 0) {
-      process.exit(0);
-    }
-  };
-  server.close(onClose);
-  streamingServer.close(onClose);
+  server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 10000).unref();
 }
 
