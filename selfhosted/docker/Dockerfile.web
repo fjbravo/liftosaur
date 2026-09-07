@@ -4,21 +4,18 @@
 # Build context is the repository root:
 #   docker build -f selfhosted/docker/Dockerfile.web \
 #     --build-arg LIFTOSAUR_HOST=https://lift.example.com \
-#     --build-arg LIFTOSAUR_API_HOST=https://lift.example.com \
-#     --build-arg LIFTOSAUR_STREAMING_API_HOST=https://lift.example.com .
+#     --build-arg LIFTOSAUR_API_HOST=https://lift.example.com .
 
 # Node 22 matches .nvmrc (lts/jod) and the CodeBuild runtime the production web bundle is built with.
 FROM node:22-bookworm AS build
 
 ARG LIFTOSAUR_HOST
 ARG LIFTOSAUR_API_HOST
-ARG LIFTOSAUR_STREAMING_API_HOST
 ARG LIFTOSAUR_SELF_HOSTED=true
 ARG COMMIT_HASH=selfhosted
 
 ENV LIFTOSAUR_HOST=${LIFTOSAUR_HOST} \
     LIFTOSAUR_API_HOST=${LIFTOSAUR_API_HOST} \
-    LIFTOSAUR_STREAMING_API_HOST=${LIFTOSAUR_STREAMING_API_HOST} \
     LIFTOSAUR_SELF_HOSTED=${LIFTOSAUR_SELF_HOSTED} \
     NODE_ENV=development \
     NODE_OPTIONS=--max-old-space-size=4096
