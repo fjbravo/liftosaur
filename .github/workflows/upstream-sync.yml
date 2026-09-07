@@ -87,7 +87,6 @@ jobs:
           docker build -f selfhosted/docker/Dockerfile.server \
             --build-arg LIFTOSAUR_HOST=https://liftosaur.bylab.io \
             --build-arg LIFTOSAUR_API_HOST=https://liftosaur.bylab.io \
-            --build-arg LIFTOSAUR_STREAMING_API_HOST=https://liftosaur.bylab.io \
             --build-arg LIFTOSAUR_SELF_HOSTED=true \
             .
 
@@ -99,7 +98,6 @@ jobs:
           docker build -f selfhosted/docker/Dockerfile.web \
             --build-arg LIFTOSAUR_HOST=https://liftosaur.bylab.io \
             --build-arg LIFTOSAUR_API_HOST=https://liftosaur.bylab.io \
-            --build-arg LIFTOSAUR_STREAMING_API_HOST=https://liftosaur.bylab.io \
             --build-arg LIFTOSAUR_SELF_HOSTED=true \
             .
 

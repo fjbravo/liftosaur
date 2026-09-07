@@ -10,11 +10,9 @@ COPY . .
 # must be known when the image is built, not just at runtime.
 ARG LIFTOSAUR_HOST
 ARG LIFTOSAUR_API_HOST
-ARG LIFTOSAUR_STREAMING_API_HOST
 ARG LIFTOSAUR_SELF_HOSTED=true
 ENV LIFTOSAUR_HOST=$LIFTOSAUR_HOST \
     LIFTOSAUR_API_HOST=$LIFTOSAUR_API_HOST \
-    LIFTOSAUR_STREAMING_API_HOST=$LIFTOSAUR_STREAMING_API_HOST \
     LIFTOSAUR_SELF_HOSTED=$LIFTOSAUR_SELF_HOSTED
 # Generates localdomain.js and src/generated/* (both gitignored), typechecks, then bundles
 # selfhosted/server.ts into dist-selfhosted/lambda/server.js with the same webpack setup as the lambda build.
@@ -31,7 +29,6 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV STREAMING_PORT=3001
 # The image generators read fonts from `${IMGPREFIX}images`, relative to the working directory.
 ENV IMGPREFIX=lambda/
 
@@ -43,7 +40,7 @@ COPY docs/content ./docs/content
 COPY programs/builtin ./programs/builtin
 
 USER node
-EXPOSE 3000 3001
+EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"

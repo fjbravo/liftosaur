@@ -13,7 +13,6 @@ x-server-build: &server-build
   args:
     LIFTOSAUR_HOST: ${HOST}
     LIFTOSAUR_API_HOST: ${HOST}
-    LIFTOSAUR_STREAMING_API_HOST: ${HOST}
     LIFTOSAUR_SELF_HOSTED: "true"
 
 x-server-env: &server-env
@@ -55,7 +54,6 @@ services:
       args:
         LIFTOSAUR_HOST: ${HOST}
         LIFTOSAUR_API_HOST: ${HOST}
-        LIFTOSAUR_STREAMING_API_HOST: ${HOST}
         LIFTOSAUR_SELF_HOSTED: "true"
         COMMIT_HASH: ${COMMIT_HASH:-selfhosted}
     image: liftosaur-web

@@ -116,7 +116,7 @@ GitHub Actions status checks.
 
 | Needs extra setup | What to do |
 |---|---|
-| AI program generation | Set `ANTHROPIC_API_KEY` (and optionally `OPENAI_API_KEY`) in `.env` and restart. Or route through an OpenAI-compatible gateway you already run (9router, LiteLLM, …): set `LLM_BASE_URL` to its `/v1` base, `LLM_MODEL` to the model/alias it serves, and `LLM_API_KEY` (or reuse `ANTHROPIC_API_KEY`) to its key. |
+| AI muscle mapping | Set `ANTHROPIC_API_KEY` in `.env` and restart. Or route through an OpenAI-compatible gateway you already run (9router, LiteLLM, …): set `LLM_BASE_URL` to its `/v1` base, `LLM_MODEL` to the model/alias it serves, and `LLM_API_KEY` (or reuse `ANTHROPIC_API_KEY`) to its key. AI *program generation* is no longer a web feature — upstream moved it to the MCP server, so connect an MCP-capable AI client to your deployment instead (the OAuth flow it needs is bootstrapped). |
 | Real email delivery | Point `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`SMTP_FROM` at your relay and remove the `mailpit` service. |
 | "Sign in with Google/Apple" buttons | The server verifies tokens against Google's and Apple's public endpoints, but the buttons need OAuth client IDs registered for *your* domain and compiled into the web bundle. Email/password works without this. |
 | Error reporting | Set `ROLLBAR_SERVER_TOKEN` to your own Rollbar project. Off by default — nothing is reported anywhere. |
@@ -129,10 +129,10 @@ building the app yourself).
 
 | Service | Image | Ports | Purpose |
 |---|---|---|---|
-| `web` | built from `selfhosted/docker/Dockerfile.web` | `${HTTP_PORT:-80}` → 80 | nginx: serves the static bundle, proxies API/page routes to `server`, `/stream/*` to the streaming port, and presigned S3 URLs to `minio`. |
-| `server` | built from `selfhosted/docker/Dockerfile.server` | internal 3000 / 3001 | The same handlers that run as Lambdas in the hosted app: main API on 3000, AI streaming on 3001, plus `/healthz` and the MinIO webhook endpoint. |
+| `web` | built from `selfhosted/docker/Dockerfile.web` | `${HTTP_PORT:-80}` → 80 | nginx: serves the static bundle, proxies API/page routes to `server` and presigned S3 URLs to `minio`. |
+| `server` | built from `selfhosted/docker/Dockerfile.server` | internal 3000 | The same handlers that run as Lambdas in the hosted app: the API on 3000, plus `/healthz` and the MinIO webhook endpoint. |
 | `cron` | same image, `node lambda/cron.js` | — | Daily stats job (23:40 UTC); weekly payment reconciliation only when IAP env vars are set. |
-| `bootstrap` | same image, `node lambda/bootstrap.js` | — | One-shot, idempotent: 23 DynamoDB tables (+GSIs, TTL) and 10 MinIO buckets with their policies and the resizer notification. |
+| `bootstrap` | same image, `node lambda/bootstrap.js` | — | One-shot, idempotent: 22 DynamoDB tables (+GSIs, TTL) and 10 MinIO buckets with their policies and the resizer notification. |
 | `dynamodb` | `amazon/dynamodb-local` | internal 8000 | Database, persisted in the `dynamodb-data` volume. |
 | `minio` | `minio/minio` | internal 9000 / 9001 | S3-compatible object storage, persisted in the `minio-data` volume. |
 | `mailpit` | `axllent/mailpit` | `${MAILPIT_UI_PORT:-8025}` → 8025 | Development mail catcher: accepts every message and shows it in a web UI instead of delivering it. Replace it with a real SMTP relay for anything beyond a trial. |
@@ -205,8 +205,7 @@ lift.example.com {
 }
 ```
 
-WebSockets are not used, but AI generation streams over SSE on `/stream/*` — disable
-response buffering for that path if your proxy buffers by default.
+WebSockets and SSE are not used, so no special proxy buffering configuration is needed.
 
 ## Troubleshooting
 

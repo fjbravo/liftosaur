@@ -135,18 +135,6 @@ const tables: ITableSpec[] = [
       },
     ],
   },
-  {
-    tableName: "lftAiLogs",
-    partitionKey: { name: "id", type: "S" },
-    ttlAttribute: "ttl",
-    gsis: [
-      {
-        indexName: "userId-timestamp-index",
-        partitionKey: { name: "userId", type: "S" },
-        sortKey: { name: "timestamp", type: "N" },
-      },
-    ],
-  },
   { tableName: "lftAiMuscleCaches", partitionKey: { name: "key", type: "S" } },
 ];
 
