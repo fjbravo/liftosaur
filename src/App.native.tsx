@@ -8,14 +8,7 @@ import { RollbarUtils_config } from "./utils/rollbar";
 import { AppAttribution_get } from "./utils/appAttribution";
 import { Ota_init, Ota_activeBundleIdSync } from "./utils/ota";
 import { RN_COMMIT_HASH, RN_FULL_COMMIT_HASH } from "./rnBuildInfo";
-import {
-  localdomain,
-  localapidomain,
-  localstreamingapidomain,
-  localport,
-  localapiport,
-  localstreamingapiport,
-} from "./localdomain";
+import { localdomain, localapidomain, localport, localapiport } from "./localdomain";
 
 declare let Rollbar: RB;
 
@@ -31,14 +24,9 @@ const nativeHost = useLocal ? `https://${localdomain}.liftosaur.com:${localport}
 const nativeApiHost = useLocal
   ? `https://${localapidomain}.liftosaur.com:${localapiport}`
   : "https://api3.liftosaur.com";
-const nativeStreamingApiHost = useLocal
-  ? `https://${localstreamingapidomain}.liftosaur.com:${localstreamingapiport}`
-  : "https://streaming-api.liftosaur.com";
-
 const globalAny = globalThis as unknown as {
   __HOST__: string;
   __API_HOST__: string;
-  __STREAMING_API_HOST__: string;
   __ENV__: string;
   __COMMIT_HASH__: string;
   __FULL_COMMIT_HASH__: string;
@@ -47,7 +35,6 @@ const globalAny = globalThis as unknown as {
 };
 globalAny.__HOST__ = nativeHost;
 globalAny.__API_HOST__ = nativeApiHost;
-globalAny.__STREAMING_API_HOST__ = nativeStreamingApiHost;
 globalAny.__ENV__ = Platform.OS === "ios" ? "ios-rn" : "android-rn";
 globalAny.__COMMIT_HASH__ = RN_COMMIT_HASH;
 globalAny.__FULL_COMMIT_HASH__ = RN_FULL_COMMIT_HASH;
@@ -226,6 +213,7 @@ import { ScreenRemovalCleanup_subscribe } from "./navigation/screenRemovalCleanu
 import { navigateToModal } from "./navigation/navigationService";
 import { getCurrentScreenData } from "./navigation/navigationService";
 import { IndexedDBUtils_initializeForSafari } from "./utils/indexeddb";
+import { DeviceId_get } from "./utils/deviceId";
 import { Persistence } from "./utils/persistence";
 import { Settings_applyTheme, Settings_getTheme } from "./models/settings";
 import { TextSize_apply, TextSize_resolve, useAppliedTextSize } from "./utils/textSize";
@@ -758,7 +746,8 @@ export function App(): React.JSX.Element {
       const key = await getIdbKey();
       const localStorage = await persistence.load(key);
       const url = new URL(`${__HOST__}/app/`);
-      const state = await getInitialState(fetch, { localStorage, url });
+      const deviceId = await DeviceId_get();
+      const state = await getInitialState(fetch, { localStorage, url, deviceId });
       Settings_applyTheme(Settings_getTheme(state.storage.settings));
       TextSize_apply(TextSize_resolve(state.storage.settings));
       if (state.storage.history.length > 0) {

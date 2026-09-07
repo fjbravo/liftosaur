@@ -7,6 +7,7 @@ import {
   IMuscleGeneratorResponse,
   IPlannerProgramWeek,
   IAffiliateData,
+  IProgramContentSettings,
 } from "../types";
 import { IAccount } from "../models/account";
 import { IEither } from "../utils/types";
@@ -167,7 +168,6 @@ const cachePromises: Partial<Record<string, unknown>> = {};
 declare let __API_HOST__: string;
 declare let __HOST__: string;
 declare let __COMMIT_HASH__: string;
-declare let __STREAMING_API_HOST__: string;
 
 export interface IRecordResponse {
   history: IHistoryRecord[];
@@ -624,6 +624,31 @@ export class Service {
     }
   }
 
+  public async postSaveSettings(args: {
+    settings: IProgramContentSettings;
+    deletedExerciseDataKeys: string[];
+    version: string;
+    deviceId?: string;
+  }): Promise<IEither<undefined, string>> {
+    const url = UrlUtils_build(`${__API_HOST__}/api/settings`);
+    try {
+      const response = await this.client(url.toString(), {
+        method: "POST",
+        body: JSON.stringify(args),
+        credentials: "include",
+      });
+      if (response.status === 200) {
+        return { success: true, data: undefined };
+      } else {
+        const json = await response.json();
+        return { success: false, error: json.error };
+      }
+    } catch (error) {
+      const e = error as Error;
+      return { success: false, error: e.message };
+    }
+  }
+
   public async deleteProgram(id: string): Promise<IEither<string, string>> {
     const url = UrlUtils_build(`${__API_HOST__}/api/program/${id}`);
     try {
@@ -756,8 +781,9 @@ export class Service {
     return JSON.parse(await Encoder_decode(json.storage));
   }
 
-  public async getExceptionData(id: string): Promise<string | undefined> {
+  public async getExceptionData(id: string, key: string): Promise<string | undefined> {
     const apiUrl = UrlUtils_build(`${__API_HOST__}/api/exception/${id}`);
+    apiUrl.searchParams.set("key", key);
     try {
       const result = await this.client(apiUrl.toString(), { credentials: "include" });
       const json = await result.json();
@@ -934,82 +960,6 @@ export class Service {
       return json.data;
     } else {
       return undefined;
-    }
-  }
-
-  public async generateAiPrompt(input: string): Promise<{ prompt?: string; error?: string }> {
-    const response = await this.client(`${__API_HOST__}/api/ai/prompt`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input }),
-      credentials: "include",
-    });
-
-    if (!response.ok && response.status !== 200) {
-      return { error: `HTTP ${response.status}: ${response.statusText}` };
-    }
-
-    const json = await response.json();
-    return json;
-  }
-
-  public async *streamAiLiftoscriptProgram(
-    input: string
-  ): AsyncGenerator<{ type: "progress" | "result" | "error" | "retry" | "finish"; data: string }, void, unknown> {
-    try {
-      const url = `${__STREAMING_API_HOST__}/stream/ai/liftoscript`;
-
-      const response = await this.client(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input }),
-        credentials: "include",
-      });
-
-      if (!response.ok && response.status !== 402) {
-        yield { type: "error", data: `HTTP ${response.status}: ${response.statusText}` };
-        return;
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        yield { type: "error", data: "No response body" };
-        return;
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.trim() === "") {
-            continue;
-          }
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6);
-            if (data === "[DONE]") {
-              return;
-            }
-            try {
-              const json = JSON.parse(data);
-              yield json;
-            } catch (e) {
-              console.error("Failed to parse SSE data:", e, data);
-            }
-          }
-        }
-      }
-    } catch (error) {
-      yield { type: "error", data: error instanceof Error ? error.message : "Unknown error" };
     }
   }
 
