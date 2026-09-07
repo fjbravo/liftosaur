@@ -149,7 +149,10 @@ jobs:
         run: |
           git push --force origin upstream/master:refs/heads/upstream-sync
 
-          pr_number=$(gh pr list --head upstream-sync --base master --state open --json number --jq '.[0].number // empty')
+          # REST lookup with an owner-qualified head: `gh pr list --head` silently
+          # returned no rows for this branch under GITHUB_TOKEN, which sent the run
+          # down the create path even though the sync PR was open.
+          pr_number=$(gh api "repos/${GITHUB_REPOSITORY}/pulls?head=${GITHUB_REPOSITORY_OWNER}:upstream-sync&base=master&state=open" --jq '.[0].number // empty')
 
           if [ -z "$pr_number" ]; then
             if ! gh pr create --head upstream-sync --base master \
